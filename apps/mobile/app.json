@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Cerberus",
+    "slug": "cerberus-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Cerberus necesita tu ubicacion para validar el marcaje de asistencia en modo Empleado."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Cerberus necesita tu camara para reconocer tu rostro y registrar el marcaje de asistencia."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Cerberus usa Face ID/huella para confirmar que eres tu quien marca desde este celular."
+        }
+      ]
+    ]
+  }
+}

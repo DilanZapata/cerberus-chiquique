@@ -1,0 +1,28 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.next
+**/.next
+.expo
+**/.expo
+.expo-shared
+coverage
+**/coverage
+*.log
+
+.git
+.claude
+docs
+
+# App movil no participa en las imagenes de api/web
+apps/mobile
+
+# Datos de runtime, nunca deben entrar al build
+apps/api/uploads
+apps/api/generated
+
+.env
+.env.local
+.env.*.local
+docker-compose.local-test.yml

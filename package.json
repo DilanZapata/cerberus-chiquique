@@ -1,0 +1,23 @@
+{
+  "name": "cerberus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Sistema de gestion de personal, asistencia, turnos y liquidacion preliminar de nomina (Colombia)",
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "apps/mobile",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace apps/api",
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:mobile": "npm run start --workspace apps/mobile",
+    "build": "npm run build --workspaces --if-present",
+    "prisma:migrate": "npm run prisma:migrate --workspace apps/api",
+    "prisma:generate": "npm run prisma:generate --workspace apps/api"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

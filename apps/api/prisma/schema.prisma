@@ -1,0 +1,671 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+// ENUMS
+// =====================================================================
+
+enum UserRole {
+  ADMIN
+  HR
+  SUPERVISOR
+  EMPLOYEE
+
+  @@map("user_role_enum")
+}
+
+enum ContractType {
+  INDEFINIDO
+  FIJO
+  OBRA_LABOR
+  APRENDIZAJE
+  PRESTACION_SERVICIOS
+
+  @@map("contract_type_enum")
+}
+
+enum TimeLogType {
+  CHECK_IN
+  LUNCH_OUT
+  LUNCH_IN
+  CHECK_OUT
+
+  @@map("time_log_type_enum")
+}
+
+enum TimeLogSource {
+  KIOSK
+  MOBILE_GPS
+  WEB
+  MANUAL
+
+  @@map("time_log_source_enum")
+}
+
+enum ShiftRotation {
+  DIURNO
+  NOCTURNO
+  MIXTO
+  DESCANSO
+
+  @@map("shift_rotation_enum")
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+
+  @@map("day_of_week_enum")
+}
+
+enum HolidayType {
+  FIJO
+  LEY_EMILIANI
+  VARIABLE
+
+  @@map("holiday_type_enum")
+}
+
+// Catalogo legal de conceptos CST (tambien columnas del reporte de nomina)
+enum NoveltyCode {
+  RNO // Recargo Nocturno Ordinario
+  DDCOF // Dominical / Festivo Ordinario (diurno)
+  DNCOF // Dominical / Festivo Nocturno
+  HEOD // Hora Extra Ordinaria Diurna
+  HEON // Hora Extra Ordinaria Nocturna
+  HEFD // Hora Extra Festiva/Dominical Diurna
+  HEFN // Hora Extra Festiva/Dominical Nocturna
+  LLEGADA_TARDE
+  LLEGADA_TARDE_ALMUERZO
+  ABANDONO_ALMUERZO
+  SALIDA_ANTICIPADA
+  AUSENCIA_INJUSTIFICADA
+  PERMISO_REMUNERADO
+  PERMISO_NO_REMUNERADO
+  PERMISO_SALIDA_TEMPORAL
+  INCAPACIDAD_GENERAL
+  INCAPACIDAD_ARL
+  VACACIONES
+  HORA_EXTRA_PENDIENTE
+  DESCANSO_COMPENSATORIO_PENDIENTE
+  LIMITE_HORAS_EXTRA_EXCEDIDO
+
+  @@map("novelty_code_enum")
+}
+
+enum NoveltyStatus {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+  AUTO_CALCULADA
+
+  @@map("novelty_status_enum")
+}
+
+enum NoveltyOrigin {
+  SISTEMA
+  MANUAL
+  IMPORTADO
+
+  @@map("novelty_origin_enum")
+}
+
+enum SmtpSecurity {
+  NONE
+  TLS
+  SSL
+
+  @@map("smtp_security_enum")
+}
+
+// =====================================================================
+// ORGANIZACION
+// =====================================================================
+
+model Company {
+  id           String   @id @default(uuid())
+  nit          String   @unique
+  legalName    String   @map("legal_name")
+  tradeName    String?  @map("trade_name")
+  timezone     String   @default("America/Bogota")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  departments          Department[]
+  workSites            WorkSite[]
+  positions            Position[]
+  users                User[]
+  schedules            Schedule[]
+  shiftPatterns        ShiftPattern[]
+  payrollSettings      PayrollSettings?
+  payrollConfigVersions PayrollConfigVersion[]
+  emailSettings        EmailSettings?
+  notificationLogs     NotificationLog[]
+  auditLogs            AuditLog[]
+
+  @@map("companies")
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  companyId String   @map("company_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  users   User[]
+
+  @@unique([companyId, name])
+  @@map("departments")
+}
+
+model WorkSite {
+  id              String   @id @default(uuid())
+  companyId       String   @map("company_id")
+  name            String
+  address         String?
+  latitude        Decimal? @db.Decimal(9, 6)
+  longitude       Decimal? @db.Decimal(9, 6)
+  gpsRadiusMeters Int      @default(150) @map("gps_radius_meters")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  users    User[]
+  timeLogs TimeLog[]
+
+  @@map("work_sites")
+}
+
+// Cargo: agrupa empleados con el mismo puesto de trabajo y les asocia un
+// horario comun (Schedule) — asignar el cargo a un empleado es lo que fija
+// su horario de entrada/salida, en vez de asignarselo uno por uno.
+model Position {
+  id         String   @id @default(uuid())
+  companyId  String   @map("company_id")
+  name       String
+  scheduleId String?  @map("schedule_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  schedule Schedule? @relation(fields: [scheduleId], references: [id])
+  users    User[]
+
+  @@unique([companyId, name])
+  @@map("positions")
+}
+
+// =====================================================================
+// USERS
+// =====================================================================
+
+model User {
+  id               String       @id @default(uuid())
+  companyId        String       @map("company_id")
+  departmentId     String?      @map("department_id")
+  workSiteId       String?      @map("work_site_id")
+  positionId       String?      @map("position_id")
+  employeeCode     String       @map("employee_code")
+  nationalId       String       @map("national_id")
+  fullName         String       @map("full_name")
+  email            String?
+  passwordHash     String?      @map("password_hash")
+  pinHash          String?      @map("pin_hash")
+  role             UserRole     @default(EMPLOYEE)
+  contractType     ContractType @default(INDEFINIDO) @map("contract_type")
+  hireDate         DateTime     @map("hire_date") @db.Date
+  terminationDate  DateTime?    @map("termination_date") @db.Date
+  baseSalary       Decimal      @default(0) @map("base_salary") @db.Decimal(14, 2)
+  allowsLunchSkip  Boolean      @default(false) @map("allows_lunch_skip")
+  supervisorId     String?      @map("supervisor_id")
+  isActive         Boolean      @default(true) @map("is_active")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  department   Department?    @relation(fields: [departmentId], references: [id])
+  workSite     WorkSite?      @relation(fields: [workSiteId], references: [id])
+  position     Position?      @relation(fields: [positionId], references: [id])
+  supervisor   User?          @relation("Supervision", fields: [supervisorId], references: [id])
+  subordinates User[]         @relation("Supervision")
+
+  userSchedules      UserSchedule[]
+  shifts             Shift[]
+  shiftPatternAssignments UserShiftPatternAssignment[]
+  timeLogs           TimeLog[]        @relation("TimeLogsOfUser")
+  manualTimeLogs     TimeLog[]        @relation("TimeLogsCreatedBy")
+  novelties          Novelty[]        @relation("NoveltiesOfUser")
+  reviewedNovelties  Novelty[]        @relation("NoveltiesReviewedBy")
+  incidences         Incidence[]      @relation("IncidencesOfUser")
+  approvedIncidences Incidence[]      @relation("IncidencesApprovedBy")
+  overtimeDecisions  OvertimeApproval[]
+  compensatoryRestCredits CompensatoryRestCredit[]
+  faceEnrollment     FaceEnrollment?
+
+  @@unique([companyId, employeeCode])
+  @@unique([companyId, nationalId])
+  @@index([companyId])
+  @@index([supervisorId])
+  @@map("users")
+}
+
+// =====================================================================
+// SCHEDULES / SHIFTS
+// =====================================================================
+
+model Schedule {
+  id                      String   @id @default(uuid())
+  companyId               String   @map("company_id")
+  name                    String
+  weeklyHoursTarget       Decimal  @default(42.00) @map("weekly_hours_target") @db.Decimal(5, 2)
+  defaultLunchMinutes     Int      @default(60) @map("default_lunch_minutes")
+  lunchWindowStart        DateTime @default(dbgenerated("'12:00'")) @map("lunch_window_start") @db.Time
+  lunchWindowEnd          DateTime @default(dbgenerated("'14:00'")) @map("lunch_window_end") @db.Time
+  lunchToleranceMinutes   Int      @default(10) @map("lunch_tolerance_minutes")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  details   ScheduleDetail[]
+  users     UserSchedule[]
+  positions Position[]
+
+  @@map("schedules")
+}
+
+model ScheduleDetail {
+  id             String    @id @default(uuid())
+  scheduleId     String    @map("schedule_id")
+  dayOfWeek      DayOfWeek @map("day_of_week")
+  isWorkingDay   Boolean   @default(true) @map("is_working_day")
+  startTime      DateTime? @map("start_time") @db.Time
+  endTime        DateTime? @map("end_time") @db.Time
+  lunchMinutes   Int?      @map("lunch_minutes")
+
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, dayOfWeek])
+  @@map("schedule_details")
+}
+
+model UserSchedule {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  scheduleId String    @map("schedule_id")
+  validFrom  DateTime  @map("valid_from") @db.Date
+  validTo    DateTime? @map("valid_to") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@index([userId, validFrom, validTo])
+  @@map("user_schedules")
+}
+
+model Shift {
+  id                   String        @id @default(uuid())
+  userId               String        @map("user_id")
+  workDate             DateTime      @map("work_date") @db.Date
+  rotationType         ShiftRotation @default(DIURNO) @map("rotation_type")
+  plannedStart         DateTime      @map("planned_start")
+  plannedEnd           DateTime      @map("planned_end")
+  plannedLunchMinutes  Int           @default(60) @map("planned_lunch_minutes")
+  isRestDay            Boolean       @default(false) @map("is_rest_day")
+  notes                String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workDate])
+  @@index([userId, workDate])
+  @@map("shifts")
+}
+
+// =====================================================================
+// HOLIDAYS
+// =====================================================================
+
+model Holiday {
+  id          String      @id @default(uuid())
+  countryCode String      @default("CO") @map("country_code")
+  holidayDate DateTime    @map("holiday_date") @db.Date
+  name        String
+  holidayType HolidayType @default(FIJO) @map("holiday_type")
+
+  @@unique([countryCode, holidayDate])
+  @@index([holidayDate])
+  @@map("holidays")
+}
+
+// =====================================================================
+// TIME LOGS
+// =====================================================================
+
+model TimeLog {
+  id          String        @id @default(uuid())
+  userId      String        @map("user_id")
+  workSiteId  String?       @map("work_site_id")
+  logType     TimeLogType   @map("log_type")
+  loggedAt    DateTime      @map("logged_at")
+  source      TimeLogSource @default(MOBILE_GPS)
+  latitude    Decimal?      @db.Decimal(9, 6)
+  longitude   Decimal?      @db.Decimal(9, 6)
+  gpsValid    Boolean?      @map("gps_valid")
+  deviceId    String?       @map("device_id")
+  photoUrl    String?       @map("photo_url")
+  createdById String?       @map("created_by")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  user      User      @relation("TimeLogsOfUser", fields: [userId], references: [id], onDelete: Cascade)
+  workSite  WorkSite? @relation(fields: [workSiteId], references: [id])
+  createdBy User?     @relation("TimeLogsCreatedBy", fields: [createdById], references: [id])
+  novelties Novelty[]
+
+  @@index([userId, loggedAt])
+  @@map("time_logs")
+}
+
+// =====================================================================
+// PAYROLL CONFIG (versionado por vigencia legal + ajustes operativos)
+// =====================================================================
+
+// Ajustes operativos de la empresa (no dependen de la ley, no cambian por fecha).
+model PayrollSettings {
+  id                              String   @id @default(uuid())
+  companyId                       String   @unique @map("company_id")
+  overtimeRequiresPreauthorization Boolean @default(true) @map("overtime_requires_preauthorization")
+  overtimePendingAlertDays        Int      @default(7) @map("overtime_pending_alert_days")
+  createdAt                       DateTime @default(now()) @map("created_at")
+  updatedAt                       DateTime @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("payroll_settings")
+}
+
+// Parametros legales con vigencia por fecha (Ley 2466 de 2025 y sucesoras
+// cambian jornada nocturna y recargo dominical progresivamente hasta 2027).
+// La version efectiva de una fecha X es la de mayor effectiveFrom <= X.
+model PayrollConfigVersion {
+  id                              String   @id @default(uuid())
+  companyId                       String   @map("company_id")
+  effectiveFrom                   DateTime @map("effective_from") @db.Date
+  dayStartTime                    DateTime @default(dbgenerated("'06:00'")) @map("day_start_time") @db.Time
+  nightStartTime                  DateTime @default(dbgenerated("'19:00'")) @map("night_start_time") @db.Time
+  maxWeeklyHours                  Decimal  @default(42.00) @map("max_weekly_hours") @db.Decimal(5, 2)
+  maxDailyOrdinaryHours           Decimal  @default(8.00) @map("max_daily_ordinary_hours") @db.Decimal(5, 2)
+  maxDailyOvertimeHours           Decimal  @default(2.00) @map("max_daily_overtime_hours") @db.Decimal(5, 2)
+  maxWeeklyOvertimeHours          Decimal  @default(12.00) @map("max_weekly_overtime_hours") @db.Decimal(5, 2)
+  dominicalOcasionalMaxPerMonth   Int      @default(2) @map("dominical_ocasional_max_per_month")
+  pctRecargoNocturno              Decimal  @default(0.35) @map("pct_recargo_nocturno") @db.Decimal(6, 4)
+  pctDominicalFestivo             Decimal  @default(0.90) @map("pct_dominical_festivo") @db.Decimal(6, 4)
+  pctDominicalFestivoNocturno     Decimal  @default(1.25) @map("pct_dominical_festivo_nocturno") @db.Decimal(6, 4)
+  pctHoraExtraDiurna              Decimal  @default(0.25) @map("pct_hora_extra_diurna") @db.Decimal(6, 4)
+  pctHoraExtraNocturna            Decimal  @default(0.75) @map("pct_hora_extra_nocturna") @db.Decimal(6, 4)
+  pctHoraExtraFestivaDiurna       Decimal  @default(1.15) @map("pct_hora_extra_festiva_diurna") @db.Decimal(6, 4)
+  pctHoraExtraFestivaNocturna     Decimal  @default(1.65) @map("pct_hora_extra_festiva_nocturna") @db.Decimal(6, 4)
+  notes                           String?
+  createdAt                       DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, effectiveFrom])
+  @@index([companyId, effectiveFrom])
+  @@map("payroll_config_versions")
+}
+
+// =====================================================================
+// NOVELTIES
+// =====================================================================
+
+model Novelty {
+  id              String        @id @default(uuid())
+  userId          String        @map("user_id")
+  workDate        DateTime      @map("work_date") @db.Date
+  code            NoveltyCode
+  hours           Decimal       @default(0) @db.Decimal(6, 3)
+  status          NoveltyStatus @default(AUTO_CALCULADA)
+  origin          NoveltyOrigin @default(SISTEMA)
+  sourceTimeLogId String?       @map("source_time_log_id")
+  notes           String?
+  reviewedById    String?       @map("reviewed_by")
+  reviewedAt      DateTime?     @map("reviewed_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  user           User               @relation("NoveltiesOfUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy     User?              @relation("NoveltiesReviewedBy", fields: [reviewedById], references: [id])
+  sourceTimeLog  TimeLog?           @relation(fields: [sourceTimeLogId], references: [id])
+  overtimeApprovals OvertimeApproval[]
+
+  @@index([userId, workDate])
+  @@index([status])
+  @@index([code])
+  @@map("novelties")
+}
+
+// =====================================================================
+// OVERTIME APPROVALS
+// =====================================================================
+
+model OvertimeApproval {
+  id              String        @id @default(uuid())
+  noveltyId       String        @map("novelty_id")
+  requestedHours  Decimal       @map("requested_hours") @db.Decimal(6, 3)
+  approvedHours   Decimal?      @map("approved_hours") @db.Decimal(6, 3)
+  status          NoveltyStatus @default(PENDIENTE)
+  decidedById     String?       @map("decided_by")
+  decidedAt       DateTime?     @map("decided_at")
+  decisionNotes   String?       @map("decision_notes")
+  alertSentAt     DateTime?     @map("alert_sent_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  novelty  Novelty @relation(fields: [noveltyId], references: [id], onDelete: Cascade)
+  decidedBy User?  @relation(fields: [decidedById], references: [id])
+
+  @@index([status])
+  @@map("overtime_approvals")
+}
+
+// =====================================================================
+// INCIDENCES
+// =====================================================================
+
+model Incidence {
+  id                String        @id @default(uuid())
+  userId            String        @map("user_id")
+  code              NoveltyCode
+  startDate         DateTime      @map("start_date") @db.Date
+  endDate           DateTime      @map("end_date") @db.Date
+  hoursPerDay       Decimal?      @map("hours_per_day") @db.Decimal(5, 2)
+  supportingDocUrl  String?       @map("supporting_doc_url")
+  approvedById      String?       @map("approved_by")
+  status            NoveltyStatus @default(PENDIENTE)
+  notes             String?
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  user       User  @relation("IncidencesOfUser", fields: [userId], references: [id], onDelete: Cascade)
+  approvedBy User? @relation("IncidencesApprovedBy", fields: [approvedById], references: [id])
+
+  @@index([userId, startDate, endDate])
+  @@map("incidences")
+}
+
+// =====================================================================
+// DESCANSO COMPENSATORIO (Art. 179/180 CST: dominical/festivo habitual)
+// =====================================================================
+
+model CompensatoryRestCredit {
+  id            String        @id @default(uuid())
+  userId        String        @map("user_id")
+  earnedForDate DateTime      @map("earned_for_date") @db.Date
+  status        NoveltyStatus @default(PENDIENTE)
+  takenDate     DateTime?     @map("taken_date") @db.Date
+  notes         String?
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, earnedForDate])
+  @@index([userId, status])
+  @@map("compensatory_rest_credits")
+}
+
+// =====================================================================
+// RUTINAS DE TURNOS ROTATIVOS (plantillas ciclicas)
+// =====================================================================
+
+model ShiftPattern {
+  id              String   @id @default(uuid())
+  companyId       String   @map("company_id")
+  name            String
+  cycleLengthDays Int      @map("cycle_length_days")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  company     Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  days        ShiftPatternDay[]
+  assignments UserShiftPatternAssignment[]
+
+  @@map("shift_patterns")
+}
+
+model ShiftPatternDay {
+  id           String        @id @default(uuid())
+  patternId    String        @map("pattern_id")
+  dayOffset    Int           @map("day_offset")
+  isRestDay    Boolean       @default(false) @map("is_rest_day")
+  rotationType ShiftRotation @default(DIURNO) @map("rotation_type")
+  startTime    DateTime?     @map("start_time") @db.Time
+  endTime      DateTime?     @map("end_time") @db.Time
+  lunchMinutes Int           @default(60) @map("lunch_minutes")
+
+  pattern ShiftPattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+
+  @@unique([patternId, dayOffset])
+  @@map("shift_pattern_days")
+}
+
+model UserShiftPatternAssignment {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  patternId  String    @map("pattern_id")
+  anchorDate DateTime  @map("anchor_date") @db.Date
+  validFrom  DateTime  @map("valid_from") @db.Date
+  validTo    DateTime? @map("valid_to") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pattern ShiftPattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+
+  @@index([userId, validFrom, validTo])
+  @@map("user_shift_pattern_assignments")
+}
+
+// =====================================================================
+// EMAIL SETTINGS / NOTIFICATIONS
+// =====================================================================
+
+model EmailSettings {
+  id                     String       @id @default(uuid())
+  companyId              String       @unique @map("company_id")
+  smtpHost               String       @map("smtp_host")
+  smtpPort               Int          @default(587) @map("smtp_port")
+  smtpUser               String       @map("smtp_user")
+  smtpPasswordEncrypted  String       @map("smtp_password_encrypted")
+  smtpSecurity           SmtpSecurity @default(TLS) @map("smtp_security")
+  fromName               String       @default("Cerberus RRHH") @map("from_name")
+  fromEmail              String       @map("from_email")
+  adminRecipients        String[]     @map("admin_recipients")
+  weeklyAlertEnabled     Boolean      @default(true) @map("weekly_alert_enabled")
+  weeklyAlertCron        String       @default("0 7 * * 1") @map("weekly_alert_cron")
+  createdAt              DateTime     @default(now()) @map("created_at")
+  updatedAt              DateTime     @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("email_settings")
+}
+
+model NotificationLog {
+  id             String   @id @default(uuid())
+  companyId      String   @map("company_id")
+  subject        String
+  recipients     String[]
+  payloadSummary Json?    @map("payload_summary")
+  status         String   @default("SENT")
+  errorMessage   String?  @map("error_message")
+  sentAt         DateTime @default(now()) @map("sent_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("notification_logs")
+}
+
+// =====================================================================
+// TOTALES DIARIOS DE ASISTENCIA (para el reporte de nomina)
+// =====================================================================
+
+model AttendanceDailyTotal {
+  id                 String   @id @default(uuid())
+  userId             String   @map("user_id")
+  workDate           DateTime @map("work_date") @db.Date
+  totalOrdinaryHours Decimal  @default(0) @map("total_ordinary_hours") @db.Decimal(6, 3)
+  totalOvertimeHours Decimal  @default(0) @map("total_overtime_hours") @db.Decimal(6, 3)
+  totalWorkedHours   Decimal  @default(0) @map("total_worked_hours") @db.Decimal(6, 3)
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, workDate])
+  @@index([userId, workDate])
+  @@map("attendance_daily_totals")
+}
+
+// =====================================================================
+// RECONOCIMIENTO FACIAL (dato biometrico sensible - Ley 1581 de 2012)
+// =====================================================================
+
+// El descriptor (128 floats de face-api.js) y todo el procesamiento de
+// fotos ocurren en este backend; nunca se envian a un servicio de terceros.
+model FaceEnrollment {
+  id             String   @id @default(uuid())
+  userId         String   @unique @map("user_id")
+  descriptor     Json
+  consentGivenAt DateTime @map("consent_given_at")
+  consentText    String   @map("consent_text")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("face_enrollments")
+}
+
+// =====================================================================
+// AUDIT LOG
+// =====================================================================
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  companyId String?  @map("company_id")
+  userId    String?  @map("user_id")
+  entity    String
+  entityId  String?  @map("entity_id")
+  action    String
+  diff      Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([entity, entityId])
+  @@map("audit_log")
+}

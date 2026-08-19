@@ -1,0 +1,62 @@
+# Para probar el build de produccion (los mismos Dockerfiles que usara
+# Dokploy) en tu maquina ANTES de subir a Dokploy, sin tocar docker-compose.yml
+# (ese es el que Dokploy usa; este es solo para pruebas locales e incluye un
+# Postgres propio, porque en Dokploy la base de datos es un recurso aparte).
+#
+# Uso:
+#   docker compose -f docker-compose.local-test.yml up --build
+#   -> web en http://localhost:8080, API en http://localhost:8081/api
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cerberus
+      POSTGRES_PASSWORD: cerberus
+      POSTGRES_DB: cerberus
+    ports:
+      - "5433:5432"
+    volumes:
+      - cerberus_local_test_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cerberus"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://cerberus:cerberus@postgres:5432/cerberus?schema=public
+      JWT_SECRET: local-test-secret
+      MASTER_RESET_PASSWORD: local-test-master-password
+    ports:
+      - "8081:3000"
+    volumes:
+      - cerberus_local_test_uploads:/repo/apps/api/uploads
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: /api
+      API_INTERNAL_URL: http://api:3000
+    ports:
+      - "8080:3000"
+
+volumes:
+  cerberus_local_test_pg:
+  cerberus_local_test_uploads:
