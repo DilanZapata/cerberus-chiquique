@@ -5,6 +5,22 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.chiquique.cerberus",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
+    },
     "plugins": [
       [
         "expo-location",
@@ -23,7 +39,14 @@
         {
           "faceIDPermission": "Cerberus usa Face ID/huella para confirmar que eres tu quien marca desde este celular."
         }
-      ]
-    ]
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e75e6b2d-15d0-4729-a1df-84804dd9f419"
+      }
+    },
+    "owner": "dilanzapata"
   }
 }
