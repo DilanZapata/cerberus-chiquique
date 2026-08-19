@@ -6,7 +6,13 @@
 FROM node:20-alpine AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
+# npm necesita el package.json de CADA workspace declarado en el "workspaces"
+# de la raiz (aunque no instalemos sus dependencias) para poder resolver el
+# grafo contra package-lock.json; si falta alguno, `npm ci` falla.
 COPY apps/web/package.json apps/web/package.json
+COPY apps/api/package.json apps/api/package.json
+COPY apps/mobile/package.json apps/mobile/package.json
+COPY packages/cst-rules/package.json packages/cst-rules/package.json
 COPY packages/shared-types/package.json packages/shared-types/package.json
 RUN npm ci --workspace apps/web --workspace packages/shared-types --include-workspace-root
 
