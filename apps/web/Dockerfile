@@ -32,6 +32,11 @@ ENV NODE_ENV=production
 WORKDIR /repo
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/package.json ./package.json
+# npm anida "next"/"react"/"react-dom" DENTRO de apps/web/node_modules (no en
+# la raiz) porque su version choca con la de apps/mobile/Expo mas arriba en
+# el arbol de workspaces. Sin esta copia el contenedor arranca sin el
+# binario de next y crashea en loop (exit 127, "command not found").
+COPY --from=build /repo/apps/web/node_modules ./apps/web/node_modules
 COPY --from=build /repo/packages/shared-types/dist ./packages/shared-types/dist
 COPY --from=build /repo/packages/shared-types/package.json ./packages/shared-types/package.json
 COPY --from=build /repo/apps/web/.next ./apps/web/.next
