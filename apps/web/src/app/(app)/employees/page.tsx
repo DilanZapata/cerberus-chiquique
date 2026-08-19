@@ -1,8 +1,9 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Building2, Plus, Users, MapPin, ScanFace, Pencil, UserX } from 'lucide-react';
+import { Building2, Plus, Users, MapPin, ScanFace, Pencil, UserX, Upload } from 'lucide-react';
 import {
   CompanyInfo,
   Department,
@@ -696,10 +697,18 @@ export default function EmployeesPage() {
         title="Empleados"
         subtitle="Tu empresa, departamentos, sedes y el personal registrado en el sistema."
         actions={
-          <Button onClick={() => setShowCreateForm((v) => !v)}>
-            <Plus size={16} />
-            Nuevo empleado
-          </Button>
+          <div className="flex gap-2">
+            <Link href="/employees/bulk-import">
+              <Button variant="secondary">
+                <Upload size={16} />
+                Carga masiva
+              </Button>
+            </Link>
+            <Button onClick={() => setShowCreateForm((v) => !v)}>
+              <Plus size={16} />
+              Nuevo empleado
+            </Button>
+          </div>
         }
       />
 

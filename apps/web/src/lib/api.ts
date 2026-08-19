@@ -10,7 +10,7 @@ export function photoUrl(relativePath: string): string {
   return `${API_ORIGIN}${relativePath}`;
 }
 
-async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = getToken();
   const headers = new Headers(options.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -584,6 +584,55 @@ export function updateEmployee(
 
 export function deactivateEmployee(id: string) {
   return apiJson(`/users/${id}/deactivate`, { method: 'POST' });
+}
+
+// ---- Carga masiva de empleados (Excel) ----
+
+export type ImportFieldMode = 'UNIFORM' | 'PER_ROW';
+
+export interface BulkImportOptions {
+  roleMode: ImportFieldMode;
+  roleValue?: string;
+  departmentMode: ImportFieldMode;
+  departmentValue?: string;
+  workSiteMode: ImportFieldMode;
+  workSiteValue?: string;
+}
+
+export interface BulkImportRowResult {
+  row: number;
+  employeeCode?: string;
+  status: 'created' | 'error';
+  message?: string;
+}
+
+export interface BulkImportResult {
+  created: number;
+  errors: BulkImportRowResult[];
+}
+
+export async function downloadEmployeeImportTemplate(): Promise<Blob> {
+  const res = await apiFetch('/users/import/template');
+  if (!res.ok) throw new Error('No se pudo descargar la plantilla');
+  return res.blob();
+}
+
+export async function bulkImportEmployees(file: File, options: BulkImportOptions): Promise<BulkImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('roleMode', options.roleMode);
+  if (options.roleValue) formData.append('roleValue', options.roleValue);
+  formData.append('departmentMode', options.departmentMode);
+  if (options.departmentValue) formData.append('departmentValue', options.departmentValue);
+  formData.append('workSiteMode', options.workSiteMode);
+  if (options.workSiteValue) formData.append('workSiteValue', options.workSiteValue);
+
+  const res = await apiFetch('/users/import', { method: 'POST', body: formData });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.message ?? `Error ${res.status} al importar`);
+  }
+  return res.json();
 }
 
 // ---- Historial de marcas (coordenadas + foto de evidencia) ----
