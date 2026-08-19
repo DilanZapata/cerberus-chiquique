@@ -22,8 +22,18 @@ COPY apps/web apps/web
 # NEXT_PUBLIC_* se hornea en el bundle en build time. Queda fijo en "/api"
 # (mismo origen) para que la MISMA imagen sirva en cualquier ambiente sin
 # reconstruir: el navegador siempre pide /api/* a su propio dominio, y es
-# next.config.js (server-side, runtime) el que hace el proxy hacia la API real.
+# next.config.js el que hace el proxy hacia la API real.
 ENV NEXT_PUBLIC_API_URL=/api
+# OJO: next.config.js calcula el destino de los rewrites (API_INTERNAL_URL)
+# EN BUILD TIME, no en runtime -- `next build` congela el resultado de
+# rewrites() en .next/routes-manifest.json y `next start` ya no vuelve a
+# llamar esa funcion. Poner API_INTERNAL_URL solo en el "environment:" del
+# docker-compose (runtime) NO tiene ningun efecto: queda horneado con el
+# valor por defecto del next.config.js (http://localhost:3001), que dentro
+# del contenedor no existe -> ECONNREFUSED. Por eso se fija aqui, ANTES del
+# build. "api" es el nombre del servicio en docker-compose.yml -- Docker
+# Compose lo resuelve por DNS interno al contenedor de la API.
+ENV API_INTERNAL_URL=http://api:3000
 RUN npm run build --workspace packages/shared-types \
     && npm run build --workspace apps/web
 

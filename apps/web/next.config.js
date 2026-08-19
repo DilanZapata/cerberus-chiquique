@@ -1,10 +1,14 @@
 // Origen (protocolo+host+puerto, SIN path) donde vive la API. En local
-// apunta al backend en el propio host; en produccion (Dokploy) se sobreescribe
-// con la variable de entorno API_INTERNAL_URL, normalmente la direccion
-// interna del contenedor de la API dentro de la red de docker-compose
-// (ej. "http://api:3000"), no el dominio publico. Se lee en runtime (no es
-// NEXT_PUBLIC_*), asi que un mismo build sirve para cualquier ambiente con
-// solo cambiar esta variable, sin reconstruir la imagen.
+// apunta al backend en el propio host; en produccion (Dokploy) se fija a la
+// direccion interna del contenedor de la API dentro de la red de
+// docker-compose (ej. "http://api:3000"), no el dominio publico.
+//
+// OJO: `rewrites()` se evalua UNA SOLA VEZ en `next build` (el resultado
+// queda congelado en .next/routes-manifest.json); `next start` no lo vuelve
+// a ejecutar. Por eso API_INTERNAL_URL se fija como ENV en el Dockerfile
+// ANTES del build (ver apps/web/Dockerfile) — ponerlo solo en el
+// "environment:" del docker-compose (runtime) no tiene ningun efecto,
+// termina siempre horneado con el valor por defecto de aqui abajo.
 const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? 'http://localhost:3001';
 
 /** @type {import('next').NextConfig} */

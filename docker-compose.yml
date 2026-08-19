@@ -31,10 +31,6 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      NEXT_PUBLIC_API_URL: /api
-      # Nombre del servicio de arriba: dentro de la red de docker-compose,
-      # "api" resuelve a la IP interna de ese contenedor.
-      API_INTERNAL_URL: http://api:3000
     expose:
       - "3000"
 
