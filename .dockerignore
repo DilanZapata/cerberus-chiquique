@@ -15,8 +15,12 @@ coverage
 .claude
 docs
 
-# App movil no participa en las imagenes de api/web
-apps/mobile
+# App movil no participa en las imagenes de api/web, PERO su package.json si
+# tiene que estar presente (los Dockerfiles lo copian) porque npm necesita el
+# package.json de CADA workspace declarado en la raiz para resolver
+# package-lock.json, aunque no instalemos sus dependencias.
+apps/mobile/*
+!apps/mobile/package.json
 
 # Datos de runtime, nunca deben entrar al build
 apps/api/uploads
