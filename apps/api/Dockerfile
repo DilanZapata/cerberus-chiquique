@@ -34,15 +34,18 @@ COPY packages/shared-types/package.json packages/shared-types/package.json
 RUN npm ci --workspace apps/api --workspace packages/cst-rules --workspace packages/shared-types --include-workspace-root
 
 # ---- build: compila shared-types -> cst-rules -> api (en ese orden, api
-# depende de los otros dos), y genera el cliente de Prisma ----
+# depende de los otros dos). El cliente de Prisma se genera ANTES de "nest
+# build": el codigo de la API importa tipos/enums (UserRole, TimeLogType...)
+# que Prisma agrega a @prisma/client en ese paso, asi que si se genera
+# despues, "nest build" falla porque esos tipos todavia no existen. ----
 FROM deps AS build
 COPY packages/shared-types packages/shared-types
 COPY packages/cst-rules packages/cst-rules
 COPY apps/api apps/api
-RUN npm run build --workspace packages/shared-types \
+RUN npx prisma generate --schema apps/api/prisma/schema.prisma \
+    && npm run build --workspace packages/shared-types \
     && npm run build --workspace packages/cst-rules \
-    && npm run build --workspace apps/api \
-    && npx prisma generate --schema apps/api/prisma/schema.prisma
+    && npm run build --workspace apps/api
 
 # ---- runtime: imagen final. Se preserva la MISMA estructura de carpetas del
 # monorepo (node_modules en la raiz con los symlinks @cerberus/* intactos)
