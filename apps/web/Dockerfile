@@ -38,6 +38,11 @@ RUN npm run build --workspace packages/shared-types \
     && npm run build --workspace apps/web
 
 FROM node:20-alpine AS runtime
+# Mismo motivo que en apps/api/Dockerfile: sin esto el contenedor corre en
+# UTC en vez de hora de Colombia, y cualquier formateo de fechas que Next
+# haga en el servidor (SSR) quedaria desfasado 5 horas.
+RUN apk add --no-cache tzdata
+ENV TZ=America/Bogota
 ENV NODE_ENV=production
 WORKDIR /repo
 COPY --from=build /repo/node_modules ./node_modules

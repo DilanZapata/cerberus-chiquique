@@ -8,10 +8,21 @@
 # ---- base: solo las librerias de sistema que canvas/tfjs-node necesitan EN
 # RUNTIME (sin headers de compilacion, para que la imagen final sea liviana) ----
 FROM node:20-bookworm-slim AS base
+# Todo el codigo (marcaje manual, calculo de "dia calendario" para el
+# kiosco, novedades, etc.) construye fechas con el constructor local de JS
+# (new Date(y,m,d,h,min)) asumiendo que el proceso corre en hora de
+# Colombia (America/Bogota, UTC-5, sin horario de verano) -- ver el
+# comentario de daysBetween() en apps/api/src/common/utils/time.util.ts.
+# La imagen base de Node NO trae zoneinfo instalado (los -slim de Debian lo
+# excluyen), asi que sin esto el contenedor corre en UTC y toda hora
+# ingresada manualmente (o el corte de "dia" del kiosco) queda desfasada 5
+# horas. tzdata instala la base de datos de zonas horarias; TZ selecciona
+# cual usar.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libjpeg62-turbo libgif7 librsvg2-2 libpixman-1-0 \
-    openssl ca-certificates \
+    openssl ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
+ENV TZ=America/Bogota
 
 # ---- deps: instala TODAS las dependencias (incluye devDependencies, porque
 # el CLI de prisma para "migrate deploy" vive ahi) con los headers de
