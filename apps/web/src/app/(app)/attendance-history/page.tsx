@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { MapPin, Image as ImageIcon, X } from 'lucide-react';
+import Link from 'next/link';
+import { MapPin, Image as ImageIcon, Pencil, X } from 'lucide-react';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { Employee, getEmployees, getTimeLogHistory, photoUrl, TimeLogHistoryEntry } from '@/lib/api';
 
 const inputClass =
@@ -65,11 +67,11 @@ export default function AttendanceHistoryPage() {
     <div className="space-y-6">
       <PageHeader
         title="Historial de Marcas"
-        subtitle="Cada marca de entrada/salida con la hora, el metodo usado, las coordenadas GPS (si aplica) y la foto de evidencia."
+        subtitle="Cada marca de entrada/salida con la hora, el metodo usado, las coordenadas GPS (si aplica) y la foto de evidencia. Esta vista es solo de lectura — para corregir una hora equivocada o revisar llegadas tarde y demas novedades, usa 'Corregir marcas y novedades'."
       />
 
       <Card className="p-5">
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[220px] flex-1">
             <label className="block text-sm font-medium text-ink-secondary">Empleado</label>
             <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} className={inputClass}>
@@ -88,6 +90,14 @@ export default function AttendanceHistoryPage() {
             <label className="block text-sm font-medium text-ink-secondary">Hasta</label>
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputClass} />
           </div>
+          {employeeId && (
+            <Link href={`/payroll-manual?employeeId=${employeeId}&from=${from}&to=${to}`}>
+              <Button variant="secondary">
+                <Pencil size={16} />
+                Corregir marcas y novedades
+              </Button>
+            </Link>
+          )}
         </div>
       </Card>
 

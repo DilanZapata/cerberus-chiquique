@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Calculator, Loader2 } from 'lucide-react';
 import { DailyCalculationResult, Employee, getEmployees, getManualRange, upsertManualDay } from '@/lib/api';
 import { PageHeader } from '@/components/ui/PageHeader';
@@ -48,6 +49,15 @@ function isWeekend(workDate: string): boolean {
 }
 
 export default function ManualPayrollPage() {
+  return (
+    <Suspense fallback={<p className="p-6 text-sm text-ink-muted">Cargando...</p>}>
+      <ManualPayrollPageInner />
+    </Suspense>
+  );
+}
+
+function ManualPayrollPageInner() {
+  const searchParams = useSearchParams();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeId, setEmployeeId] = useState('');
   const [from, setFrom] = useState('');
@@ -75,14 +85,32 @@ export default function ManualPayrollPage() {
       .catch(() => {});
   }, []);
 
-  async function handleGenerate() {
-    if (!employeeId || !from || !to) return;
+  // Permite llegar con un enlace directo desde Historial de Marcas ya
+  // apuntando a un empleado y fecha, en vez de tener que reseleccionarlos.
+  useEffect(() => {
+    const qEmployeeId = searchParams.get('employeeId');
+    const qDate = searchParams.get('date');
+    const qFrom = searchParams.get('from') ?? qDate;
+    const qTo = searchParams.get('to') ?? qDate;
+    if (!qEmployeeId || !qFrom || !qTo) return;
+    setEmployeeId(qEmployeeId);
+    setFrom(qFrom);
+    setTo(qTo);
+    handleGenerate(qEmployeeId, qFrom, qTo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  async function handleGenerate(overrideEmployeeId?: string, overrideFrom?: string, overrideTo?: string) {
+    const empId = overrideEmployeeId ?? employeeId;
+    const f = overrideFrom ?? from;
+    const t = overrideTo ?? to;
+    if (!empId || !f || !t) return;
     setRangeError(null);
     setLoadingRange(true);
     try {
-      const existing = await getManualRange(employeeId, from, to);
+      const existing = await getManualRange(empId, f, t);
       const existingByDate = Object.fromEntries(existing.map((d) => [d.workDate, d]));
-      const dates = listDatesBetween(from, to);
+      const dates = listDatesBetween(f, t);
       setRows(
         dates.map((workDate) => {
           const ex = existingByDate[workDate];
@@ -94,7 +122,7 @@ export default function ManualPayrollPage() {
             checkOut: ex?.checkOut ?? '',
             result: ex && (ex.novelties.length > 0 || ex.totalWorkedHours > 0)
               ? {
-                  userId: employeeId,
+                  userId: empId,
                   workDate,
                   novelties: ex.novelties,
                   totalOrdinaryHours: ex.totalOrdinaryHours,
@@ -170,8 +198,8 @@ export default function ManualPayrollPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Calculo Manual de Nomina"
-        subtitle="Ingresa la hora de entrada y salida de un empleado dia por dia (ej. desde una planilla en papel) y el sistema calcula las novedades automaticamente con el mismo motor del kiosco."
+        title="Corregir Marcas y Novedades"
+        subtitle="Aqui puedes cambiar la hora de entrada o salida que ya marco un empleado (si se equivoco, olvido marcar, o vienes de una planilla en papel). Al guardar, el sistema recalcula automaticamente llegadas tarde, salidas anticipadas, horas extra y demas novedades con el mismo motor del kiosco."
       />
 
       <Card className="p-5">
@@ -197,7 +225,7 @@ export default function ManualPayrollPage() {
           </div>
         </div>
         <div className="mt-4">
-          <Button onClick={handleGenerate} disabled={!employeeId || !from || !to || loadingRange}>
+          <Button onClick={() => handleGenerate()} disabled={!employeeId || !from || !to || loadingRange}>
             {loadingRange ? <Loader2 size={15} className="animate-spin" /> : <Calculator size={15} />}
             Generar dias
           </Button>

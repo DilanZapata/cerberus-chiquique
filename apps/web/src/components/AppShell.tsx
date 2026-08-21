@@ -13,7 +13,6 @@ import {
   CalendarCheck2,
   CalendarClock,
   FileSpreadsheet,
-  Calculator,
   SlidersHorizontal,
   Mail,
   LogOut,
@@ -23,6 +22,7 @@ import {
   HelpCircle,
   MapPin,
   Briefcase,
+  Pencil,
 } from 'lucide-react';
 import { clearSession, getUser } from '@/lib/auth';
 
@@ -45,6 +45,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/employees', label: 'Empleados', icon: Users },
       { href: '/positions', label: 'Cargos y Horarios', icon: Briefcase },
       { href: '/attendance-history', label: 'Historial de Marcas', icon: MapPin },
+      { href: '/payroll-manual', label: 'Corregir Marcas y Novedades', icon: Pencil },
     ],
   },
   {
@@ -53,7 +54,6 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/overtime', label: 'Horas Extra', icon: Clock3 },
       { href: '/incidences', label: 'Permisos e Incapacidades', icon: FileText },
       { href: '/rest-credits', label: 'Descanso Compensatorio', icon: CalendarCheck2 },
-      { href: '/payroll-manual', label: 'Calculo Manual', icon: Calculator },
       { href: '/reports', label: 'Reportes (Excel)', icon: FileSpreadsheet },
     ],
   },
