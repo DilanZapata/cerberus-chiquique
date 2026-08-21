@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { TimeLogSource, TimeLogType } from '@prisma/client';
+import { Prisma, TimeLogSource, TimeLogType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays } from '../../common/utils/time.util';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
@@ -9,6 +9,7 @@ import { AuthenticatedUser } from '../../common/decorators/current-user.decorato
 import { NoveltiesService } from '../novelties/novelties.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
 import { ManualTimeLogDto } from './dto/manual-time-log.dto';
+import { CreateMarkDto } from './dto/single-mark.dto';
 
 /** Construye una fecha local a partir de "YYYY-MM-DD" y "HH:mm". */
 function localDateTime(workDate: string, hhmm: string): Date {
@@ -20,6 +21,24 @@ function localDateTime(workDate: string, hhmm: string): Date {
 function formatHHmm(date: Date): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
+
+/**
+ * Fecha calendario (YYYY-MM-DD) de un instante, en hora LOCAL del proceso
+ * (Colombia, ver TZ=America/Bogota en el Dockerfile) -- a diferencia de
+ * loggedAt.toISOString().slice(0,10), que da la fecha en UTC y por lo tanto
+ * corre una marca nocturna (ej. 11pm Colombia = 4am UTC del dia siguiente)
+ * al dia calendario equivocado.
+ */
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+const MARK_TYPE_LABELS: Record<TimeLogType, string> = {
+  CHECK_IN: 'Entrada',
+  LUNCH_OUT: 'Salida almuerzo',
+  LUNCH_IN: 'Reingreso almuerzo',
+  CHECK_OUT: 'Salida',
+};
 
 function minutesOfDay(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
@@ -250,7 +269,7 @@ export class TimeLogsService {
     const rangeStart = new Date(`${from}T00:00:00`);
     const rangeEnd = addDays(new Date(`${to}T00:00:00`), 1);
 
-    const [novelties, totals] = await Promise.all([
+    const [novelties, totals, rawMarks] = await Promise.all([
       this.prisma.novelty.findMany({
         where: { userId, workDate: { gte: rangeStart, lt: rangeEnd } },
         orderBy: { workDate: 'asc' },
@@ -258,7 +277,23 @@ export class TimeLogsService {
       this.prisma.attendanceDailyTotal.findMany({
         where: { userId, workDate: { gte: rangeStart, lt: rangeEnd } },
       }),
+      this.prisma.timeLog.findMany({
+        where: { userId, loggedAt: { gte: rangeStart, lt: rangeEnd } },
+        orderBy: { loggedAt: 'asc' },
+      }),
     ]);
+
+    // Lista real de marcas por dia calendario (no por tipo, como
+    // findShiftMarks): si hay una marca duplicada o fuera de secuencia,
+    // findShiftMarks la esconde (solo toma la primera de cada tipo); esta
+    // lista muestra TODO lo que realmente hay ese dia, para poder editarlo.
+    const marksByDate = new Map<string, Array<{ id: string; logType: TimeLogType; time: string; source: string }>>();
+    for (const mark of rawMarks) {
+      const key = localDateKey(mark.loggedAt);
+      const list = marksByDate.get(key) ?? [];
+      list.push({ id: mark.id, logType: mark.logType, time: formatHHmm(mark.loggedAt), source: mark.source });
+      marksByDate.set(key, list);
+    }
 
     const noveltiesByDate = new Map<string, Array<{ code: string; hours: number; status: string }>>();
     for (const novelty of novelties) {
@@ -289,6 +324,7 @@ export class TimeLogsService {
         lunchOut: marks.lunchOut ? formatHHmm(marks.lunchOut) : undefined,
         lunchIn: marks.lunchIn ? formatHHmm(marks.lunchIn) : undefined,
         checkOut: marks.checkOut ? formatHHmm(marks.checkOut) : undefined,
+        marks: marksByDate.get(workDate) ?? [],
         novelties: noveltiesByDate.get(workDate) ?? [],
         totalOrdinaryHours: total?.totalOrdinaryHours ?? 0,
         totalOvertimeHours: total?.totalOvertimeHours ?? 0,
@@ -297,5 +333,68 @@ export class TimeLogsService {
     }
 
     return results;
+  }
+
+  /** Cambia solo la hora de una marca puntual ya existente (mantiene su dia calendario). */
+  async updateMark(companyId: string, id: string, hhmm: string) {
+    const mark = await this.prisma.timeLog.findFirst({ where: { id }, include: { user: true } });
+    if (!mark || mark.user.companyId !== companyId) throw new NotFoundException(`Marca ${id} no encontrada`);
+
+    const [hh, mm] = hhmm.split(':').map(Number);
+    const newLoggedAt = new Date(mark.loggedAt);
+    newLoggedAt.setHours(hh, mm, 0, 0);
+
+    try {
+      await this.prisma.timeLog.update({
+        where: { id },
+        data: { loggedAt: newLoggedAt, source: TimeLogSource.MANUAL },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException(
+          `Ya existe otra marca de tipo "${MARK_TYPE_LABELS[mark.logType]}" en el dia al que cambiaste la hora.`,
+        );
+      }
+      throw err;
+    }
+
+    return this.noveltiesService.calculateAndPersistForDay(mark.userId, localDateKey(newLoggedAt));
+  }
+
+  /** Borra una marca puntual (no el dia completo) y recalcula las novedades de su dia. */
+  async deleteMark(companyId: string, id: string) {
+    const mark = await this.prisma.timeLog.findFirst({ where: { id }, include: { user: true } });
+    if (!mark || mark.user.companyId !== companyId) throw new NotFoundException(`Marca ${id} no encontrada`);
+
+    const workDate = localDateKey(mark.loggedAt);
+    await this.prisma.timeLog.delete({ where: { id } });
+    return this.noveltiesService.calculateAndPersistForDay(mark.userId, workDate);
+  }
+
+  /** Agrega una marca puntual nueva (ej. el empleado olvido marcar la salida). */
+  async createMark(companyId: string, dto: CreateMarkDto) {
+    const user = await this.prisma.user.findFirst({ where: { id: dto.userId, companyId } });
+    if (!user) throw new NotFoundException(`Empleado ${dto.userId} no encontrado`);
+
+    try {
+      await this.prisma.timeLog.create({
+        data: {
+          userId: dto.userId,
+          workSiteId: user.workSiteId,
+          logType: dto.logType,
+          loggedAt: localDateTime(dto.workDate, dto.time),
+          source: TimeLogSource.MANUAL,
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException(
+          `Ya existe una marca de tipo "${MARK_TYPE_LABELS[dto.logType]}" ese dia. Edita o borra la existente en vez de agregar otra.`,
+        );
+      }
+      throw err;
+    }
+
+    return this.noveltiesService.calculateAndPersistForDay(dto.userId, dto.workDate);
   }
 }

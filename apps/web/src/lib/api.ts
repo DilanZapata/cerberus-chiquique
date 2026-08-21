@@ -722,12 +722,20 @@ export function upsertManualDay(body: ManualDayInput): Promise<DailyCalculationR
   return apiJson('/time-logs/manual', { method: 'PUT', body: JSON.stringify(body) });
 }
 
+export interface TimeLogMark {
+  id: string;
+  logType: 'CHECK_IN' | 'LUNCH_OUT' | 'LUNCH_IN' | 'CHECK_OUT';
+  time: string;
+  source: string;
+}
+
 export interface ManualDayExisting {
   workDate: string;
   checkIn?: string;
   lunchOut?: string;
   lunchIn?: string;
   checkOut?: string;
+  marks: TimeLogMark[];
   novelties: CalculatedNovelty[];
   totalOrdinaryHours: number;
   totalOvertimeHours: number;
@@ -741,6 +749,26 @@ export function getManualRange(userId: string, from: string, to: string): Promis
 
 export function deleteManualDay(userId: string, workDate: string): Promise<DailyCalculationResult> {
   return apiJson(`/time-logs/manual?userId=${userId}&workDate=${workDate}`, { method: 'DELETE' });
+}
+
+/** Cambia solo la hora de una marca puntual ya existente. */
+export function updateMarkTime(id: string, time: string): Promise<DailyCalculationResult> {
+  return apiJson(`/time-logs/${id}`, { method: 'PUT', body: JSON.stringify({ time }) });
+}
+
+/** Borra una marca puntual (no el dia completo). */
+export function deleteMark(id: string): Promise<DailyCalculationResult> {
+  return apiJson(`/time-logs/${id}`, { method: 'DELETE' });
+}
+
+/** Agrega una marca puntual nueva (ej. el empleado olvido marcar la salida). */
+export function createMark(
+  userId: string,
+  workDate: string,
+  logType: TimeLogMark['logType'],
+  time: string,
+): Promise<DailyCalculationResult> {
+  return apiJson('/time-logs/manual-mark', { method: 'POST', body: JSON.stringify({ userId, workDate, logType, time }) });
 }
 
 // ---- Panel maestro (/master) ----

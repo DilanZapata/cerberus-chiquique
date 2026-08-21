@@ -2,8 +2,17 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Calculator, Loader2, Trash2 } from 'lucide-react';
-import { DailyCalculationResult, Employee, deleteManualDay, getEmployees, getManualRange, upsertManualDay } from '@/lib/api';
+import { Calculator, Loader2, Plus, Trash2 } from 'lucide-react';
+import {
+  CalculatedNovelty,
+  Employee,
+  TimeLogMark,
+  createMark,
+  deleteMark,
+  getEmployees,
+  getManualRange,
+  updateMarkTime,
+} from '@/lib/api';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -16,14 +25,24 @@ const inputClass =
 const WEEKDAY_LABELS = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
 const MONTH_LABELS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
+const MARK_TYPE_LABELS: Record<TimeLogMark['logType'], string> = {
+  CHECK_IN: 'Entrada',
+  LUNCH_OUT: 'Salida almuerzo',
+  LUNCH_IN: 'Reingreso almuerzo',
+  CHECK_OUT: 'Salida',
+};
+
 interface DayRow {
   workDate: string;
-  checkIn: string;
-  lunchOut: string;
-  lunchIn: string;
-  checkOut: string;
-  result: DailyCalculationResult | null;
-  saving: boolean;
+  marks: TimeLogMark[];
+  novelties: CalculatedNovelty[];
+  totalOrdinaryHours: number;
+  totalOvertimeHours: number;
+  totalWorkedHours: number;
+  busyMarkId: string | null;
+  addingType: TimeLogMark['logType'] | '';
+  addingTime: string;
+  addBusy: boolean;
   error: string | null;
 }
 
@@ -66,11 +85,6 @@ function ManualPayrollPageInner() {
   const [loadingRange, setLoadingRange] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
 
-  const rowsRef = useRef<DayRow[]>([]);
-  useEffect(() => {
-    rowsRef.current = rows;
-  }, [rows]);
-
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   useEffect(() => {
     const timers = debounceTimers.current;
@@ -100,6 +114,22 @@ function ManualPayrollPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  function dayRowFrom(workDate: string, ex: Awaited<ReturnType<typeof getManualRange>>[number] | undefined): DayRow {
+    return {
+      workDate,
+      marks: ex?.marks ?? [],
+      novelties: ex?.novelties ?? [],
+      totalOrdinaryHours: ex?.totalOrdinaryHours ?? 0,
+      totalOvertimeHours: ex?.totalOvertimeHours ?? 0,
+      totalWorkedHours: ex?.totalWorkedHours ?? 0,
+      busyMarkId: null,
+      addingType: '',
+      addingTime: '',
+      addBusy: false,
+      error: null,
+    };
+  }
+
   async function handleGenerate(overrideEmployeeId?: string, overrideFrom?: string, overrideTo?: string) {
     const empId = overrideEmployeeId ?? employeeId;
     const f = overrideFrom ?? from;
@@ -111,31 +141,7 @@ function ManualPayrollPageInner() {
       const existing = await getManualRange(empId, f, t);
       const existingByDate = Object.fromEntries(existing.map((d) => [d.workDate, d]));
       const dates = listDatesBetween(f, t);
-      setRows(
-        dates.map((workDate) => {
-          const ex = existingByDate[workDate];
-          return {
-            workDate,
-            checkIn: ex?.checkIn ?? '',
-            lunchOut: ex?.lunchOut ?? '',
-            lunchIn: ex?.lunchIn ?? '',
-            checkOut: ex?.checkOut ?? '',
-            result: ex && (ex.novelties.length > 0 || ex.totalWorkedHours > 0)
-              ? {
-                  userId: empId,
-                  workDate,
-                  novelties: ex.novelties,
-                  totalOrdinaryHours: ex.totalOrdinaryHours,
-                  totalOvertimeHours: ex.totalOvertimeHours,
-                  totalWorkedHours: ex.totalWorkedHours,
-                  hasPendingOvertime: false,
-                }
-              : null,
-            saving: false,
-            error: null,
-          };
-        }),
-      );
+      setRows(dates.map((workDate) => dayRowFrom(workDate, existingByDate[workDate])));
     } catch (err) {
       setRangeError((err as Error).message);
     } finally {
@@ -143,53 +149,67 @@ function ManualPayrollPageInner() {
     }
   }
 
-  function updateField(workDate: string, field: 'checkIn' | 'lunchOut' | 'lunchIn' | 'checkOut', value: string) {
-    setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, [field]: value } : r)));
-
-    if (debounceTimers.current[workDate]) clearTimeout(debounceTimers.current[workDate]);
-    debounceTimers.current[workDate] = setTimeout(() => calculateDay(workDate), 600);
-  }
-
-  async function calculateDay(workDate: string) {
-    const row = rowsRef.current.find((r) => r.workDate === workDate);
-    if (!row) return;
-
-    if (!row.checkIn && !row.lunchOut && !row.lunchIn && !row.checkOut) {
-      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, result: null, error: null } : r)));
-      return;
-    }
-
-    setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, saving: true, error: null } : r)));
+  /** Vuelve a traer un solo dia del servidor y reemplaza esa fila, para no tener que reconstruir el estado a mano tras editar/borrar/agregar una marca. */
+  async function refreshDay(workDate: string) {
+    const empId = employeeId;
+    if (!empId) return;
     try {
-      const result = await upsertManualDay({
-        userId: employeeId,
-        workDate,
-        checkIn: row.checkIn || undefined,
-        lunchOut: row.lunchOut || undefined,
-        lunchIn: row.lunchIn || undefined,
-        checkOut: row.checkOut || undefined,
-      });
-      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, result, saving: false } : r)));
+      const [ex] = await getManualRange(empId, workDate, workDate);
+      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...dayRowFrom(workDate, ex), addingType: r.addingType } : r)));
     } catch (err) {
-      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, saving: false, error: (err as Error).message } : r)));
+      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, busyMarkId: null, error: (err as Error).message } : r)));
     }
   }
 
-  async function handleDeleteDay(workDate: string) {
-    if (!confirm('¿Borrar todas las marcas de este día? Esta acción no se puede deshacer.')) return;
-    if (debounceTimers.current[workDate]) clearTimeout(debounceTimers.current[workDate]);
-    setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, saving: true, error: null } : r)));
+  function handleEditMarkTime(workDate: string, markId: string, time: string) {
+    setRows((prev) =>
+      prev.map((r) => (r.workDate === workDate ? { ...r, marks: r.marks.map((m) => (m.id === markId ? { ...m, time } : m)) } : r)),
+    );
+
+    const timerKey = `${workDate}:${markId}`;
+    if (debounceTimers.current[timerKey]) clearTimeout(debounceTimers.current[timerKey]);
+    debounceTimers.current[timerKey] = setTimeout(async () => {
+      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, busyMarkId: markId, error: null } : r)));
+      const row = rowsSnapshot(workDate);
+      const mark = row?.marks.find((m) => m.id === markId);
+      if (!mark) return;
+      try {
+        await updateMarkTime(markId, mark.time);
+        await refreshDay(workDate);
+      } catch (err) {
+        setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, busyMarkId: null, error: (err as Error).message } : r)));
+      }
+    }, 600);
+  }
+
+  const rowsRef = useRef<DayRow[]>([]);
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
+  function rowsSnapshot(workDate: string) {
+    return rowsRef.current.find((r) => r.workDate === workDate);
+  }
+
+  async function handleDeleteMark(workDate: string, markId: string) {
+    if (!confirm('¿Borrar esta marca? Esta acción no se puede deshacer.')) return;
+    setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, busyMarkId: markId, error: null } : r)));
     try {
-      await deleteManualDay(employeeId, workDate);
-      setRows((prev) =>
-        prev.map((r) =>
-          r.workDate === workDate
-            ? { ...r, checkIn: '', lunchOut: '', lunchIn: '', checkOut: '', result: null, saving: false }
-            : r,
-        ),
-      );
+      await deleteMark(markId);
+      await refreshDay(workDate);
     } catch (err) {
-      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, saving: false, error: (err as Error).message } : r)));
+      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, busyMarkId: null, error: (err as Error).message } : r)));
+    }
+  }
+
+  async function handleAddMark(workDate: string) {
+    const row = rowsSnapshot(workDate);
+    if (!row || !row.addingType || !row.addingTime) return;
+    setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, addBusy: true, error: null } : r)));
+    try {
+      await createMark(employeeId, workDate, row.addingType, row.addingTime);
+      await refreshDay(workDate);
+    } catch (err) {
+      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, addBusy: false, error: (err as Error).message } : r)));
     }
   }
 
@@ -199,11 +219,10 @@ function ManualPayrollPageInner() {
     let totalOrdinary = 0;
     let totalOvertime = 0;
     for (const row of rows) {
-      if (!row.result) continue;
-      totalWorked += row.result.totalWorkedHours;
-      totalOrdinary += row.result.totalOrdinaryHours;
-      totalOvertime += row.result.totalOvertimeHours;
-      for (const n of row.result.novelties) {
+      totalWorked += row.totalWorkedHours;
+      totalOrdinary += row.totalOrdinaryHours;
+      totalOvertime += row.totalOvertimeHours;
+      for (const n of row.novelties) {
         byCode[n.code] = (byCode[n.code] ?? 0) + n.hours;
       }
     }
@@ -211,13 +230,13 @@ function ManualPayrollPageInner() {
   }, [rows]);
 
   const selectedEmployee = employees.find((e) => e.id === employeeId);
-  const daysWithData = rows.filter((r) => r.result).length;
+  const daysWithData = rows.filter((r) => r.marks.length > 0).length;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Corregir Marcas y Novedades"
-        subtitle="Aqui puedes cambiar la hora de entrada o salida que ya marco un empleado (si se equivoco, olvido marcar, o vienes de una planilla en papel). Al guardar, el sistema recalcula automaticamente llegadas tarde, salidas anticipadas, horas extra y demas novedades con el mismo motor del kiosco."
+        subtitle="Selecciona un empleado y un rango de fechas: aqui aparecen las marcas reales que registro ese dia (entrada, salida, almuerzo). Puedes cambiar la hora de cualquiera, borrarla, o agregar una que falte. Al guardar, el sistema recalcula automaticamente llegadas tarde, salidas anticipadas, horas extra y demas novedades con el mismo motor del kiosco."
       />
 
       <Card className="p-5">
@@ -255,7 +274,7 @@ function ManualPayrollPageInner() {
         <>
           <Card className="sticky top-4 z-10 p-5">
             <div className="text-sm font-semibold text-ink">
-              Total {selectedEmployee ? `— ${selectedEmployee.fullName}` : ''} ({daysWithData}/{rows.length} dias calculados)
+              Total {selectedEmployee ? `— ${selectedEmployee.fullName}` : ''} ({daysWithData}/{rows.length} dias con marcas)
             </div>
             <div className="mt-3 flex flex-wrap gap-4">
               <div>
@@ -285,56 +304,86 @@ function ManualPayrollPageInner() {
           <Card className="overflow-hidden">
             <div className="divide-y divide-line-hair">
               {rows.map((row) => (
-                <div key={row.workDate} className={`flex flex-col gap-3 p-4 sm:flex-row sm:items-center ${isWeekend(row.workDate) ? 'bg-surface-page' : ''}`}>
-                  <div className="w-32 shrink-0 text-sm font-medium capitalize text-ink">{formatDayLabel(row.workDate)}</div>
+                <div key={row.workDate} className={`p-4 ${isWeekend(row.workDate) ? 'bg-surface-page' : ''}`}>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                    <div className="w-32 shrink-0 pt-1.5 text-sm font-medium capitalize text-ink">{formatDayLabel(row.workDate)}</div>
 
-                  <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
-                    <div>
-                      <label className="block text-xs text-ink-muted">Entrada</label>
-                      <input
-                        type="time"
-                        value={row.checkIn}
-                        onChange={(e) => updateField(row.workDate, 'checkIn', e.target.value)}
-                        className={inputClass}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-ink-muted">Salida almuerzo</label>
-                      <input
-                        type="time"
-                        value={row.lunchOut}
-                        onChange={(e) => updateField(row.workDate, 'lunchOut', e.target.value)}
-                        className={inputClass}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-ink-muted">Reingreso almuerzo</label>
-                      <input
-                        type="time"
-                        value={row.lunchIn}
-                        onChange={(e) => updateField(row.workDate, 'lunchIn', e.target.value)}
-                        className={inputClass}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-ink-muted">Salida</label>
-                      <input
-                        type="time"
-                        value={row.checkOut}
-                        onChange={(e) => updateField(row.workDate, 'checkOut', e.target.value)}
-                        className={inputClass}
-                      />
-                    </div>
-                  </div>
+                    <div className="flex-1 space-y-2">
+                      {row.marks.length === 0 && <p className="text-xs text-ink-muted">Sin marcas registradas.</p>}
+                      {row.marks.map((mark) => (
+                        <div key={mark.id} className="flex flex-wrap items-center gap-2">
+                          <span className="w-36 shrink-0 text-xs text-ink-secondary">{MARK_TYPE_LABELS[mark.logType]}</span>
+                          <input
+                            type="time"
+                            value={mark.time}
+                            onChange={(e) => handleEditMarkTime(row.workDate, mark.id, e.target.value)}
+                            className={`${inputClass} w-32`}
+                          />
+                          {mark.source === 'MANUAL' && (
+                            <span className="text-xs text-ink-muted" title="Marca corregida o cargada manualmente">
+                              corregida
+                            </span>
+                          )}
+                          {row.busyMarkId === mark.id ? (
+                            <Loader2 size={14} className="animate-spin text-ink-muted" />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMark(row.workDate, mark.id)}
+                              title="Borrar esta marca"
+                              className="rounded-md p-1 text-ink-muted hover:bg-red-50 hover:text-red-700"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
 
-                  <div className="flex min-h-[28px] flex-wrap items-center gap-1.5 sm:w-64 sm:justify-end">
-                    {row.saving && <Loader2 size={14} className="animate-spin text-ink-muted" />}
-                    {row.error && <span className="text-xs text-red-700">{row.error}</span>}
-                    {!row.saving &&
-                      !row.error &&
-                      row.result &&
-                      (row.result.novelties.length > 0 ? (
-                        row.result.novelties.map((n, i) => (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <select
+                          value={row.addingType}
+                          onChange={(e) =>
+                            setRows((prev) =>
+                              prev.map((r) =>
+                                r.workDate === row.workDate ? { ...r, addingType: e.target.value as TimeLogMark['logType'] | '' } : r,
+                              ),
+                            )
+                          }
+                          className={`${inputClass} w-40`}
+                        >
+                          <option value="">Agregar marca...</option>
+                          {(Object.keys(MARK_TYPE_LABELS) as TimeLogMark['logType'][])
+                            .filter((t) => !row.marks.some((m) => m.logType === t))
+                            .map((t) => (
+                              <option key={t} value={t}>
+                                {MARK_TYPE_LABELS[t]}
+                              </option>
+                            ))}
+                        </select>
+                        <input
+                          type="time"
+                          value={row.addingTime}
+                          onChange={(e) =>
+                            setRows((prev) => prev.map((r) => (r.workDate === row.workDate ? { ...r, addingTime: e.target.value } : r)))
+                          }
+                          className={`${inputClass} w-32`}
+                        />
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleAddMark(row.workDate)}
+                          disabled={!row.addingType || !row.addingTime || row.addBusy}
+                        >
+                          {row.addBusy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                          Agregar
+                        </Button>
+                      </div>
+
+                      {row.error && <p className="text-xs text-red-700">{row.error}</p>}
+                    </div>
+
+                    <div className="flex min-h-[24px] flex-wrap items-center gap-1.5 sm:w-56 sm:justify-end">
+                      {row.novelties.length > 0 ? (
+                        row.novelties.map((n, i) => (
                           <span
                             key={i}
                             className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${NOVELTY_BADGE_CLASS[n.status] ?? NOVELTY_BADGE_CLASS.AUTO_CALCULADA}`}
@@ -344,17 +393,8 @@ function ManualPayrollPageInner() {
                         ))
                       ) : (
                         <span className="text-xs text-ink-muted">Sin novedades</span>
-                      ))}
-                    {(row.checkIn || row.lunchOut || row.lunchIn || row.checkOut) && !row.saving && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteDay(row.workDate)}
-                        title="Borrar todas las marcas de este día"
-                        className="rounded-md p-1 text-ink-muted hover:bg-red-50 hover:text-red-700"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}

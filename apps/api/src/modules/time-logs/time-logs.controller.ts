@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { TimeLogsService } from './time-logs.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
 import { ManualTimeLogDto } from './dto/manual-time-log.dto';
+import { CreateMarkDto, UpdateMarkDto } from './dto/single-mark.dto';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 
@@ -60,5 +61,31 @@ export class TimeLogsController {
     @CurrentUser() currentUser: AuthenticatedUser,
   ) {
     return this.timeLogsService.getHistory(currentUser, userId, from, to);
+  }
+
+  /** Agrega una marca puntual nueva (ej. el empleado olvido marcar la salida). */
+  @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
+  @Post('manual-mark')
+  createMark(@Body() dto: CreateMarkDto, @CurrentUser() currentUser: AuthenticatedUser) {
+    return this.timeLogsService.createMark(currentUser.companyId, dto);
+  }
+
+  // Rutas ":id" AL FINAL del controller a proposito: Nest/Express matchea en
+  // orden de declaracion, y "PUT/DELETE /time-logs/:id" interceptaria rutas
+  // literales como "/time-logs/manual" (con id="manual") si se declararan
+  // antes que ellas.
+
+  /** Cambia solo la hora de una marca puntual ya existente. */
+  @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
+  @Put(':id')
+  updateMark(@Param('id') id: string, @Body() dto: UpdateMarkDto, @CurrentUser() currentUser: AuthenticatedUser) {
+    return this.timeLogsService.updateMark(currentUser.companyId, id, dto.time);
+  }
+
+  /** Borra una marca puntual (no el dia completo). */
+  @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
+  @Delete(':id')
+  deleteMark(@Param('id') id: string, @CurrentUser() currentUser: AuthenticatedUser) {
+    return this.timeLogsService.deleteMark(currentUser.companyId, id);
   }
 }
