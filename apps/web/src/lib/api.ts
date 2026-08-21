@@ -739,6 +739,10 @@ export function getManualRange(userId: string, from: string, to: string): Promis
   return apiJson(`/time-logs/manual?userId=${userId}&from=${from}&to=${to}`);
 }
 
+export function deleteManualDay(userId: string, workDate: string): Promise<DailyCalculationResult> {
+  return apiJson(`/time-logs/manual?userId=${userId}&workDate=${workDate}`, { method: 'DELETE' });
+}
+
 // ---- Panel maestro (/master) ----
 // Fuera del JWT normal: usa una contrasena separada (header x-master-password),
 // asi que no reutiliza apiFetch/apiJson (esas redirigen a /login en un 401,

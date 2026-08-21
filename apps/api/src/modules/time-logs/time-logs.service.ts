@@ -131,41 +131,50 @@ export class TimeLogsService {
    * recalcula las novedades de ese dia, reutilizando el mismo motor que usan
    * el kiosco y el autoservicio movil.
    */
+  /**
+   * Calcula el rango [start, end) de TimeLogs a borrar para reemplazar/
+   * limpiar las marcas de un dia especifico, sin tocar un turno nocturno
+   * distinto que haya quedado guardado cruzando la medianoche (ni el de
+   * ayer, ni el de un dia siguiente separado). Compartido por
+   * upsertManualDay y deleteManualDay.
+   */
+  private async computeDeleteRange(userId: string, workDate: string): Promise<{ start: Date; end: Date }> {
+    const dayStart = new Date(`${workDate}T00:00:00`);
+    const dayEnd = addDays(dayStart, 1);
+
+    const existingCheckIn = await this.prisma.timeLog.findFirst({
+      where: { userId, logType: TimeLogType.CHECK_IN, loggedAt: { gte: dayStart, lt: dayEnd } },
+    });
+    let end = dayEnd;
+    if (existingCheckIn) {
+      const searchEnd = addDays(existingCheckIn.loggedAt, 1);
+      const nextCheckIn = await this.prisma.timeLog.findFirst({
+        where: { userId, logType: TimeLogType.CHECK_IN, loggedAt: { gt: existingCheckIn.loggedAt, lt: searchEnd } },
+        orderBy: { loggedAt: 'asc' },
+      });
+      end = nextCheckIn?.loggedAt ?? searchEnd;
+    }
+
+    const yesterdayMarks = await findShiftMarks(this.prisma, userId, addDays(dayStart, -1));
+    let start = dayStart;
+    for (const mark of [yesterdayMarks.lunchOut, yesterdayMarks.lunchIn, yesterdayMarks.checkOut]) {
+      if (mark && mark >= start && mark < dayEnd) {
+        start = new Date(mark.getTime() + 1);
+      }
+    }
+
+    return { start, end };
+  }
+
   async upsertManualDay(companyId: string, dto: ManualTimeLogDto) {
     const user = await this.prisma.user.findFirst({ where: { id: dto.userId, companyId } });
     if (!user) throw new NotFoundException(`Empleado ${dto.userId} no encontrado`);
-
-    const dayStart = new Date(`${dto.workDate}T00:00:00`);
-    const dayEnd = addDays(dayStart, 1);
 
     // El turno pudo haber quedado guardado previamente cruzando la
     // medianoche (ej. vigilante 10pm-6am); hay que borrar tambien esas
     // marcas para no dejar residuos duplicados, sin tocar el turno del dia
     // siguiente si es uno distinto.
-    const existingCheckIn = await this.prisma.timeLog.findFirst({
-      where: { userId: dto.userId, logType: TimeLogType.CHECK_IN, loggedAt: { gte: dayStart, lt: dayEnd } },
-    });
-    let deleteRangeEnd = dayEnd;
-    if (existingCheckIn) {
-      const searchEnd = addDays(existingCheckIn.loggedAt, 1);
-      const nextCheckIn = await this.prisma.timeLog.findFirst({
-        where: { userId: dto.userId, logType: TimeLogType.CHECK_IN, loggedAt: { gt: existingCheckIn.loggedAt, lt: searchEnd } },
-        orderBy: { loggedAt: 'asc' },
-      });
-      deleteRangeEnd = nextCheckIn?.loggedAt ?? searchEnd;
-    }
-
-    // El turno de AYER (si tambien fue nocturno) puede haber dejado su
-    // salida o marcas de almuerzo dentro de la ventana calendario de hoy;
-    // no deben borrarse al reemplazar las marcas de hoy.
-    const yesterdayMarks = await findShiftMarks(this.prisma, dto.userId, addDays(dayStart, -1));
-    let deleteRangeStart = dayStart;
-    for (const mark of [yesterdayMarks.lunchOut, yesterdayMarks.lunchIn, yesterdayMarks.checkOut]) {
-      if (mark && mark >= deleteRangeStart && mark < dayEnd) {
-        deleteRangeStart = new Date(mark.getTime() + 1);
-      }
-    }
-
+    const { start: deleteRangeStart, end: deleteRangeEnd } = await this.computeDeleteRange(dto.userId, dto.workDate);
     const marks = buildShiftMarks(dto.workDate, dto);
 
     await this.prisma.$transaction([
@@ -178,6 +187,17 @@ export class TimeLogsService {
     ]);
 
     return this.noveltiesService.calculateAndPersistForDay(dto.userId, dto.workDate);
+  }
+
+  /** Borra TODAS las marcas de un dia especifico de un empleado (sin reemplazarlas) y recalcula sus novedades. */
+  async deleteManualDay(companyId: string, userId: string, workDate: string) {
+    const user = await this.prisma.user.findFirst({ where: { id: userId, companyId } });
+    if (!user) throw new NotFoundException(`Empleado ${userId} no encontrado`);
+
+    const { start, end } = await this.computeDeleteRange(userId, workDate);
+    await this.prisma.timeLog.deleteMany({ where: { userId, loggedAt: { gte: start, lt: end } } });
+
+    return this.noveltiesService.calculateAndPersistForDay(userId, workDate);
   }
 
   /**

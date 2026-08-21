@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Post, Put, Query } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { TimeLogsService } from './time-logs.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
@@ -21,6 +21,17 @@ export class TimeLogsController {
   @Put('manual')
   upsertManual(@Body() dto: ManualTimeLogDto, @CurrentUser() currentUser: AuthenticatedUser) {
     return this.timeLogsService.upsertManualDay(currentUser.companyId, dto);
+  }
+
+  /** Borra todas las marcas de un dia especifico de un empleado (sin reemplazarlas) y recalcula sus novedades. */
+  @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
+  @Delete('manual')
+  deleteManual(
+    @Query('userId') userId: string,
+    @Query('workDate') workDate: string,
+    @CurrentUser() currentUser: AuthenticatedUser,
+  ) {
+    return this.timeLogsService.deleteManualDay(currentUser.companyId, userId, workDate);
   }
 
   /** Trae marcas y novedades ya cargadas de un empleado en un rango, para precargar el formulario. */

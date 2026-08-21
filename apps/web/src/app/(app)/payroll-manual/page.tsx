@@ -2,8 +2,8 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Calculator, Loader2 } from 'lucide-react';
-import { DailyCalculationResult, Employee, getEmployees, getManualRange, upsertManualDay } from '@/lib/api';
+import { Calculator, Loader2, Trash2 } from 'lucide-react';
+import { DailyCalculationResult, Employee, deleteManualDay, getEmployees, getManualRange, upsertManualDay } from '@/lib/api';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -175,6 +175,24 @@ function ManualPayrollPageInner() {
     }
   }
 
+  async function handleDeleteDay(workDate: string) {
+    if (!confirm('¿Borrar todas las marcas de este día? Esta acción no se puede deshacer.')) return;
+    if (debounceTimers.current[workDate]) clearTimeout(debounceTimers.current[workDate]);
+    setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, saving: true, error: null } : r)));
+    try {
+      await deleteManualDay(employeeId, workDate);
+      setRows((prev) =>
+        prev.map((r) =>
+          r.workDate === workDate
+            ? { ...r, checkIn: '', lunchOut: '', lunchIn: '', checkOut: '', result: null, saving: false }
+            : r,
+        ),
+      );
+    } catch (err) {
+      setRows((prev) => prev.map((r) => (r.workDate === workDate ? { ...r, saving: false, error: (err as Error).message } : r)));
+    }
+  }
+
   const totals = useMemo(() => {
     const byCode: Record<string, number> = {};
     let totalWorked = 0;
@@ -327,6 +345,16 @@ function ManualPayrollPageInner() {
                       ) : (
                         <span className="text-xs text-ink-muted">Sin novedades</span>
                       ))}
+                    {(row.checkIn || row.lunchOut || row.lunchIn || row.checkOut) && !row.saving && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDay(row.workDate)}
+                        title="Borrar todas las marcas de este día"
+                        className="rounded-md p-1 text-ink-muted hover:bg-red-50 hover:text-red-700"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
