@@ -47,6 +47,17 @@ export interface MarkResolutionContext {
   /** Ventanas configurables del Schedule resuelto (Fase 4). Undefined -> se usan los defaults de este archivo. */
   finalExitWindowBeforeMin?: number;
   finalExitGraceMin?: number;
+  /**
+   * Ventana de almuerzo configurada ("HH:mm" + tolerancia en minutos),
+   * misma que usa el motor de nomina (resolveLunch en cst-rules) para
+   * decidir si un hueco sin marcar es almuerzo. Sin esto, una marca
+   * cualquiera despues del check-in se asignaria ciegamente al siguiente
+   * slot vacio (LUNCH_OUT) sin importar si la hora tiene algo que ver con
+   * el horario real de almuerzo -- ver decideForOpenShift.
+   */
+  lunchWindowStart?: string;
+  lunchWindowEnd?: string;
+  lunchToleranceMinutes?: number;
 }
 
 export interface ResolvedMark {
@@ -68,6 +79,34 @@ function crossesMidnight(shift: PlannedShiftWindow): boolean {
   const startMinutes = shift.start.getHours() * 60 + shift.start.getMinutes();
   const endMinutes = shift.end.getHours() * 60 + shift.end.getMinutes();
   return endMinutes < startMinutes;
+}
+
+function timeOnDate(referenceDate: Date, hhmm: string): Date {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date(referenceDate);
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
+/**
+ * Determina si `now` cae dentro de la ventana de almuerzo configurada (con
+ * tolerancia), anclada al dia de `checkIn` -- mismo criterio que usa
+ * `resolveLunch()` en `cst-rules/lunch-engine.ts` para decidir donde cae el
+ * almuerzo cuando no se marco, para que la INTERPRETACION de una marca y el
+ * CALCULO de nomina compartan la misma nocion de "esto es horario de
+ * almuerzo". Si la hora de la ventana en reloj cae antes que `checkIn` (ej.
+ * turno nocturno 10pm-6am con ventana 12:00-13:00), se prueba la instancia
+ * del dia calendario siguiente.
+ */
+function isWithinLunchWindow(checkIn: Date, now: Date, windowStart: string, windowEnd: string, toleranceMinutes: number): boolean {
+  const candidateStart = timeOnDate(checkIn, windowStart);
+  const start = candidateStart >= checkIn ? candidateStart : addDays(candidateStart, 1);
+  let end = timeOnDate(start, windowEnd);
+  if (end < start) end = addDays(end, 1); // ventana que cruza medianoche
+
+  const toleratedStart = new Date(start.getTime() - toleranceMinutes * 60_000);
+  const toleratedEnd = new Date(end.getTime() + toleranceMinutes * 60_000);
+  return now >= toleratedStart && now <= toleratedEnd;
 }
 
 function dateKey(date: Date): string {
@@ -143,6 +182,7 @@ function decideForOpenShift(
   now: Date,
   workDate: string,
   finalExitWindowBeforeMin: number,
+  lunchWindow: { start: string; end: string; toleranceMinutes: number } | undefined,
 ): ResolvedMark | null {
   if (marks.checkOut) return null; // ya completo las marcas de ese turno
 
@@ -168,6 +208,26 @@ function decideForOpenShift(
     }
   }
 
+  // Si todavia no hay NINGUNA marca de almuerzo y "now" cae claramente
+  // fuera de la ventana de almuerzo configurada (con tolerancia), esta
+  // marca NO es un almuerzo -- es una salida definitiva anticipada (ej.
+  // alguien que entro a las 8am y marca de nuevo a las 4pm, con horario de
+  // almuerzo 12pm-2pm). Sin este chequeo, CUALQUIER marca posterior al
+  // check-in se asignaba ciegamente al siguiente slot vacio (LUNCH_OUT) sin
+  // importar que tan lejos estuviera del horario real de almuerzo -- lo que
+  // ademas corrompia el calculo de nomina (resolveLunch interpretaria luego
+  // eso como abandono de almuerzo, no como una jornada corta legitima).
+  if (!marks.lunchOut && !marks.lunchIn && marks.checkIn && lunchWindow) {
+    const withinLunchWindow = isWithinLunchWindow(marks.checkIn, now, lunchWindow.start, lunchWindow.end, lunchWindow.toleranceMinutes);
+    if (!withinLunchWindow) {
+      return {
+        nextLogType: TimeLogType.CHECK_OUT,
+        workDate,
+        reason: `Fuera de la ventana de almuerzo configurada (${lunchWindow.start}-${lunchWindow.end}, tolerancia ${lunchWindow.toleranceMinutes} min); se interpreta como salida definitiva anticipada, no como salida a almuerzo.`,
+      };
+    }
+  }
+
   const nextType = MARK_SEQUENCE.find((type) => !markValue(marks, type));
   if (!nextType) return null;
   return { nextLogType: nextType, workDate, reason: 'Siguiente marca en la secuencia normal del turno (aun lejos de la salida final programada).' };
@@ -183,6 +243,10 @@ export async function resolveNextMark(
   const todayMarks = await findShiftMarks(prisma, userId, today);
   const finalExitWindowBeforeMin = context.finalExitWindowBeforeMin ?? DEFAULT_FINAL_EXIT_WINDOW_BEFORE_MIN;
   const nightShiftGraceMin = context.finalExitGraceMin ?? DEFAULT_NIGHT_SHIFT_GRACE_MIN;
+  const lunchWindow =
+    context.lunchWindowStart && context.lunchWindowEnd
+      ? { start: context.lunchWindowStart, end: context.lunchWindowEnd, toleranceMinutes: context.lunchToleranceMinutes ?? 0 }
+      : undefined;
 
   if (!todayMarks.checkIn) {
     // Sin entrada hoy. Solo se considera "continuar" el turno de ayer si ese
@@ -201,6 +265,7 @@ export async function resolveNextMark(
           now,
           dateKey(yesterday),
           finalExitWindowBeforeMin,
+          lunchWindow,
         );
         if (decided) {
           return {
@@ -221,5 +286,6 @@ export async function resolveNextMark(
     now,
     dateKey(today),
     finalExitWindowBeforeMin,
+    lunchWindow,
   );
 }

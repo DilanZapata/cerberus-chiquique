@@ -324,11 +324,18 @@ export class NoveltiesService {
       return { plannedShift: undefined, isScheduledRestDay: true };
     }
 
+    const start = combineDateAndTime(date, detail.startTime);
+    let end = combineDateAndTime(date, detail.endTime);
+    // Turno que cruza medianoche (ej. vigilante 22:00-06:00): la hora de
+    // salida en reloj es "menor" que la de entrada, asi que el instante real
+    // de salida cae en el dia calendario SIGUIENTE, no en el mismo `date`.
+    // Sin este ajuste, `end` quedaba apuntando a una hora del pasado (ej.
+    // 06:00 del MISMO dia que 22:00), rompiendo el calculo de la ventana de
+    // gracia para continuar el turno nocturno al cruzar medianoche.
+    if (end <= start) end = addDays(end, 1);
+
     return {
-      plannedShift: {
-        start: combineDateAndTime(date, detail.startTime),
-        end: combineDateAndTime(date, detail.endTime),
-      },
+      plannedShift: { start, end },
       isScheduledRestDay: false,
       finalExitWindowBeforeMin: schedule.finalExitWindowBeforeMin,
       finalExitGraceMin: schedule.finalExitGraceMin,
@@ -407,6 +414,13 @@ export class NoveltiesService {
       // Si ninguno tiene, resolveNextMark aplica sus propios defaults.
       finalExitWindowBeforeMin: todayShift.finalExitWindowBeforeMin ?? yesterdayShift.finalExitWindowBeforeMin,
       finalExitGraceMin: todayShift.finalExitGraceMin ?? yesterdayShift.finalExitGraceMin,
+      // Misma ventana de almuerzo (hora y tolerancia) que ya usa el motor de
+      // nomina (resolveLunch en cst-rules) para decidir si un hueco sin
+      // marcar es almuerzo o no -- resolveNextMark la usa para lo mismo: no
+      // confundir una marca fuera de esta ventana con "salida a almuerzo".
+      lunchWindowStart: lunchPolicy.windowStart,
+      lunchWindowEnd: lunchPolicy.windowEnd,
+      lunchToleranceMinutes: lunchPolicy.toleranceMinutes,
     };
   }
 
