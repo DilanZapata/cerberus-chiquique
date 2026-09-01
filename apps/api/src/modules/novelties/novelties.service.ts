@@ -360,6 +360,35 @@ export class NoveltiesService {
   }
 
   /**
+   * Empaqueta, para el instante `now`, todo lo que la interpretacion de una
+   * marca de kiosco/app movil necesita del horario del empleado: su turno
+   * planeado de hoy y de ayer (misma resolucion Shift > UserSchedule >
+   * Position.schedule que usa el calculo de novedades, para que la
+   * INTERPRETACION de la marca y el CALCULO de nomina nunca queden
+   * desincronizados), y su politica de almuerzo (para el caso de
+   * adelanto/compensacion). Usado por `resolveNextMark` en
+   * shift-marks.util.ts.
+   */
+  async resolveMarkContext(userId: string, now: Date) {
+    const today = startOfLocalDay(now);
+    const yesterday = addDays(today, -1);
+
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    const [todayShift, yesterdayShift, lunchPolicy] = await Promise.all([
+      this.getPlannedShift(userId, today),
+      this.getPlannedShift(userId, yesterday),
+      this.getLunchPolicy(userId, today, user.allowsLunchSkip),
+    ]);
+
+    return {
+      todayPlannedShift: todayShift.plannedShift,
+      yesterdayPlannedShift: yesterdayShift.plannedShift,
+      allowsLunchSkip: user.allowsLunchSkip,
+      defaultLunchMinutes: lunchPolicy.defaultLunchMinutes,
+    };
+  }
+
+  /**
    * Busca las marcas del turno que inicia en `date`. Usa la utilidad
    * compartida que reconoce turnos nocturnos (ej. vigilantes 10pm-6am): la
    * salida se busca en orden cronologico, no restringida al mismo dia

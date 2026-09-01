@@ -9,6 +9,11 @@ export const MARK_SEQUENCE: TimeLogType[] = [
   TimeLogType.CHECK_OUT,
 ];
 
+// Ventanas por defecto (minutos). Fase 1: constantes; en una fase posterior
+// se moveran a columnas configurables en Schedule (por empresa/cargo/persona).
+const FINAL_EXIT_WINDOW_BEFORE_MIN = 30;
+const NIGHT_SHIFT_GRACE_MIN = 240;
+
 export interface ShiftMarks {
   checkIn?: Date;
   lunchOut?: Date;
@@ -16,11 +21,51 @@ export interface ShiftMarks {
   checkOut?: Date;
 }
 
+export interface PlannedShiftWindow {
+  start: Date;
+  end: Date;
+}
+
+/**
+ * Contexto de horario que el llamador (kiosco / app movil) debe resolver
+ * ANTES de invocar resolveNextMark, via NoveltiesService.resolveMarkContext
+ * -- la misma resolucion de horario (Shift > UserSchedule > Position.schedule)
+ * que ya usa el motor de novedades para calcular RNO/HEOD/etc, para que la
+ * INTERPRETACION de una marca y el CALCULO de nomina nunca queden
+ * desincronizados entre si.
+ */
+export interface MarkResolutionContext {
+  /** Horario planeado para el dia calendario de "now". Undefined si no tiene horario asignado ese dia (o es dia de descanso). */
+  todayPlannedShift?: PlannedShiftWindow;
+  /** Horario planeado para el dia calendario ANTERIOR a "now" -- para decidir si un turno de ayer cruzaba la medianoche. */
+  yesterdayPlannedShift?: PlannedShiftWindow;
+  allowsLunchSkip: boolean;
+  defaultLunchMinutes: number;
+}
+
+export interface ResolvedMark {
+  nextLogType: TimeLogType;
+  workDate: string;
+  /** Explica por que se tomo esta decision (requisito: la logica debe ser explicable, no una caja negra). */
+  reason: string;
+}
+
 function markValue(marks: ShiftMarks, type: TimeLogType): Date | undefined {
   if (type === TimeLogType.CHECK_IN) return marks.checkIn;
   if (type === TimeLogType.LUNCH_OUT) return marks.lunchOut;
   if (type === TimeLogType.LUNCH_IN) return marks.lunchIn;
   return marks.checkOut;
+}
+
+/** Un turno "cruza medianoche" si su hora de salida (de reloj) es anterior a su hora de entrada (ej. 22:00 -> 06:00). */
+function crossesMidnight(shift: PlannedShiftWindow): boolean {
+  const startMinutes = shift.start.getHours() * 60 + shift.start.getMinutes();
+  const endMinutes = shift.end.getHours() * 60 + shift.end.getMinutes();
+  return endMinutes < startMinutes;
+}
+
+function dateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 /**
@@ -62,30 +107,101 @@ export async function findShiftMarks(prisma: PrismaService, userId: string, date
 
 /**
  * Determina la siguiente marca esperada (kiosco/app) para un empleado en el
- * instante `now`. Si ayer quedo un turno sin completar (ej. entro anoche y
- * aun no ha marcado salida) y no han pasado mas de 24h, continua ese turno en
- * vez de asumir que hoy es un dia nuevo — asi los vigilantes/turnos
- * nocturnos marcan su salida correctamente aunque ya sea "otro dia".
+ * instante `now`, usando el horario REAL asignado (context) en vez de
+ * asumir ciegamente "el siguiente slot vacio de la secuencia".
+ *
+ * Dos reglas nuevas que corrigen el bug original:
+ *
+ * 1. Una marca de un dia nuevo NUNCA completa el turno de ayer, salvo que el
+ *    horario de ayer cruzara realmente la medianoche (turnos nocturnos tipo
+ *    vigilante) -- y aun asi, acotado al fin real de ese turno + un margen
+ *    de gracia, no a una ventana ciega de 24h.
+ * 2. Si la hora actual esta cerca o despues de la hora de salida programada
+ *    (o de la salida programada MENOS el almuerzo, si el empleado tiene
+ *    permiso de saltarlo y aun no marco ningun evento de almuerzo -- el
+ *    caso de "adelanto/compensacion de almuerzo"), la marca SIEMPRE se
+ *    interpreta como salida final, incluso si faltaron marcas de almuerzo.
  */
+/**
+ * Decide la siguiente marca para un turno YA con entrada marcada (hoy, o el
+ * de ayer si se esta continuando un turno nocturno). Centraliza la regla de
+ * "cerca o despues de la salida final = siempre salida definitiva" para que
+ * aplique por igual a ambos casos -- antes solo se aplicaba al turno de hoy,
+ * dejando turnos nocturnos sin marca de almuerzo con el mismo bug original.
+ */
+function decideForOpenShift(
+  marks: ShiftMarks,
+  plannedShift: PlannedShiftWindow | undefined,
+  allowsLunchSkip: boolean,
+  defaultLunchMinutes: number,
+  now: Date,
+  workDate: string,
+): ResolvedMark | null {
+  if (marks.checkOut) return null; // ya completo las marcas de ese turno
+
+  if (plannedShift) {
+    let effectiveFinalExit = plannedShift.end;
+    let compensating = false;
+    if (allowsLunchSkip && !marks.lunchOut && !marks.lunchIn) {
+      // Permiso de saltar almuerzo y aun no marco nada de almuerzo: si sale
+      // ahora, esta compensando/adelantando el almuerzo, asi que su salida
+      // "normal" efectiva es la hora programada MENOS el almuerzo.
+      effectiveFinalExit = new Date(effectiveFinalExit.getTime() - defaultLunchMinutes * 60_000);
+      compensating = true;
+    }
+    const windowStart = new Date(effectiveFinalExit.getTime() - FINAL_EXIT_WINDOW_BEFORE_MIN * 60_000);
+    if (now >= windowStart) {
+      return {
+        nextLogType: TimeLogType.CHECK_OUT,
+        workDate,
+        reason: compensating
+          ? 'Dentro de la ventana de salida final compensando/adelantando el almuerzo (tiene permiso de saltarlo y no lo marco); se registra como salida definitiva.'
+          : `Dentro de la ventana de salida final (${FINAL_EXIT_WINDOW_BEFORE_MIN} min antes de la hora programada, o despues); se registra como salida definitiva aunque falten marcas de almuerzo.`,
+      };
+    }
+  }
+
+  const nextType = MARK_SEQUENCE.find((type) => !markValue(marks, type));
+  if (!nextType) return null;
+  return { nextLogType: nextType, workDate, reason: 'Siguiente marca en la secuencia normal del turno (aun lejos de la salida final programada).' };
+}
+
 export async function resolveNextMark(
   prisma: PrismaService,
   userId: string,
   now: Date,
-): Promise<{ nextLogType: TimeLogType; workDate: string } | null> {
+  context: MarkResolutionContext,
+): Promise<ResolvedMark | null> {
   const today = startOfLocalDay(now);
-  const yesterday = addDays(today, -1);
+  const todayMarks = await findShiftMarks(prisma, userId, today);
 
-  const yesterdayMarks = await findShiftMarks(prisma, userId, yesterday);
-  if (yesterdayMarks.checkIn) {
-    const hoursSinceCheckIn = (now.getTime() - yesterdayMarks.checkIn.getTime()) / 3_600_000;
-    const nextType = MARK_SEQUENCE.find((type) => !markValue(yesterdayMarks, type));
-    if (nextType && hoursSinceCheckIn <= 24) {
-      return { nextLogType: nextType, workDate: yesterday.toISOString().slice(0, 10) };
+  if (!todayMarks.checkIn) {
+    // Sin entrada hoy. Solo se considera "continuar" el turno de ayer si ese
+    // turno realmente cruzaba la medianoche segun el horario asignado --
+    // nunca por defecto, y nunca para personal con horario diurno normal.
+    if (context.yesterdayPlannedShift && crossesMidnight(context.yesterdayPlannedShift)) {
+      const yesterday = addDays(today, -1);
+      const yesterdayMarks = await findShiftMarks(prisma, userId, yesterday);
+      const graceEnd = new Date(context.yesterdayPlannedShift.end.getTime() + NIGHT_SHIFT_GRACE_MIN * 60_000);
+      if (yesterdayMarks.checkIn && now <= graceEnd) {
+        const decided = decideForOpenShift(
+          yesterdayMarks,
+          context.yesterdayPlannedShift,
+          context.allowsLunchSkip,
+          context.defaultLunchMinutes,
+          now,
+          dateKey(yesterday),
+        );
+        if (decided) {
+          return {
+            ...decided,
+            reason: `Continua el turno nocturno de ayer (horario cruza medianoche, dentro del margen de ${NIGHT_SHIFT_GRACE_MIN} min tras su salida programada). ${decided.reason}`,
+          };
+        }
+      }
     }
+    return { nextLogType: TimeLogType.CHECK_IN, workDate: dateKey(today), reason: 'Primera marca del dia calendario de hoy.' };
   }
 
-  const todayMarks = await findShiftMarks(prisma, userId, today);
-  const nextType = MARK_SEQUENCE.find((type) => !markValue(todayMarks, type));
-  if (!nextType) return null;
-  return { nextLogType: nextType, workDate: today.toISOString().slice(0, 10) };
+  return decideForOpenShift(todayMarks, context.todayPlannedShift, context.allowsLunchSkip, context.defaultLunchMinutes, now, dateKey(today));
 }

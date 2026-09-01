@@ -96,9 +96,14 @@ export class KioskService {
     imageBase64?: string,
   ) {
     const now = new Date();
-    // Si anoche quedo un turno sin cerrar (ej. vigilante que entro a las
-    // 10pm), continua ese turno en vez de asumir que hoy empieza uno nuevo.
-    const resolved = await resolveNextMark(this.prisma, user.id, now);
+    // La interpretacion de la marca (entrada/almuerzo/salida) se basa en el
+    // horario REAL asignado al empleado (resolveMarkContext, misma
+    // resolucion que usa el calculo de novedades), no en adivinar por
+    // secuencia -- asi una salida tardia sin marcas de almuerzo se reconoce
+    // como salida final, y una marca de un dia nuevo nunca completa el turno
+    // de ayer salvo que ese turno realmente cruce la medianoche.
+    const context = await this.noveltiesService.resolveMarkContext(user.id, now);
+    const resolved = await resolveNextMark(this.prisma, user.id, now, context);
     if (!resolved) {
       throw new BadRequestException(`${user.fullName} ya completo las 4 marcas de hoy.`);
     }
@@ -126,6 +131,7 @@ export class KioskService {
       employeeCode: user.employeeCode,
       logType: resolved.nextLogType,
       loggedAt: now,
+      reason: resolved.reason,
     };
   }
 }

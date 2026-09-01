@@ -116,9 +116,11 @@ export class TimeLogsService {
     }
 
     const now = new Date();
-    // Si anoche quedo un turno sin cerrar (ej. vigilante que entro a las
-    // 10pm), continua ese turno en vez de asumir que hoy empieza uno nuevo.
-    const resolved = await resolveNextMark(this.prisma, userId, now);
+    // La interpretacion de la marca se basa en el horario REAL asignado al
+    // empleado (ver comentario en resolveNextMark/shift-marks.util.ts), no
+    // en adivinar por secuencia.
+    const context = await this.noveltiesService.resolveMarkContext(userId, now);
+    const resolved = await resolveNextMark(this.prisma, userId, now, context);
     if (!resolved) {
       throw new BadRequestException('Ya completaste las 4 marcas de hoy.');
     }
@@ -141,7 +143,7 @@ export class TimeLogsService {
 
     await this.noveltiesService.calculateAndPersistForDay(userId, resolved.workDate);
 
-    return { logType: resolved.nextLogType, loggedAt: now, distanceMeters: Math.round(distanceMeters) };
+    return { logType: resolved.nextLogType, loggedAt: now, distanceMeters: Math.round(distanceMeters), reason: resolved.reason };
   }
 
   /**
