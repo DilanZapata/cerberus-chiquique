@@ -2,17 +2,21 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Calculator, Loader2, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Calculator, Loader2, Plus, Trash2 } from 'lucide-react';
 import {
+  BulkDeletePreview,
   CalculatedNovelty,
   Employee,
   TimeLogMark,
+  bulkDeleteMarks,
   createMark,
   deleteMark,
   getEmployees,
   getManualRange,
+  previewBulkDeleteMarks,
   updateMarkTime,
 } from '@/lib/api';
+import { getUser } from '@/lib/auth';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -65,6 +69,142 @@ function formatDayLabel(workDate: string): string {
 function isWeekend(workDate: string): boolean {
   const day = new Date(`${workDate}T00:00:00`).getDay();
   return day === 0 || day === 6;
+}
+
+function DangerZone({ employees }: { employees: Employee[] }) {
+  const [employeeId, setEmployeeId] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [preview, setPreview] = useState<BulkDeletePreview | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const selectedEmployee = employees.find((e) => e.id === employeeId);
+
+  async function handlePreview() {
+    if (!from || !to) return;
+    setError(null);
+    setResult(null);
+    setPreview(null);
+    setLoadingPreview(true);
+    try {
+      const p = await previewBulkDeleteMarks(from, to, employeeId || undefined);
+      setPreview(p);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingPreview(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!preview) return;
+    const scope = selectedEmployee ? selectedEmployee.fullName : `TODOS los trabajadores (${preview.usersAffected})`;
+    const confirmed = confirm(
+      `Vas a borrar ${preview.timeLogsCount} marcas y ${preview.noveltiesCount} novedades de ${scope}, entre ${from} y ${to}.\n\n` +
+        'Esta accion NO se puede deshacer. ¿Confirmas?',
+    );
+    if (!confirmed) return;
+
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await bulkDeleteMarks(from, to, employeeId || undefined);
+      setResult(`Se borraron ${res.timeLogsDeleted} marcas, ${res.noveltiesDeleted} novedades y ${res.totalsDeleted} totales.`);
+      setPreview(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <Card className="border-red-200 bg-red-50/40 p-5">
+      <div className="flex items-center gap-2 text-sm font-semibold text-red-700">
+        <AlertTriangle size={16} /> Zona de peligro: borrar marcas
+      </div>
+      <p className="mt-1 text-xs text-ink-secondary">
+        Borra permanentemente las marcas (y las novedades/totales calculados a partir de ellas) de un rango de fechas. Puedes elegir un
+        trabajador puntual o dejarlo en blanco para borrar de todos los trabajadores de la empresa. No hay forma de deshacer esto.
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
+        <div className="sm:col-span-2">
+          <label className="block text-sm font-medium text-ink-secondary">Trabajador</label>
+          <select
+            value={employeeId}
+            onChange={(e) => {
+              setEmployeeId(e.target.value);
+              setPreview(null);
+              setResult(null);
+            }}
+            className={`mt-1 w-full ${inputClass}`}
+          >
+            <option value="">Todos los trabajadores</option>
+            {employees.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.employeeCode} · {e.fullName}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-ink-secondary">Desde</label>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setPreview(null);
+              setResult(null);
+            }}
+            className={`mt-1 w-full ${inputClass}`}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-ink-secondary">Hasta</label>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => {
+              setTo(e.target.value);
+              setPreview(null);
+              setResult(null);
+            }}
+            className={`mt-1 w-full ${inputClass}`}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button variant="secondary" onClick={handlePreview} disabled={!from || !to || loadingPreview}>
+          {loadingPreview ? <Loader2 size={15} className="animate-spin" /> : null}
+          Ver cuantas marcas se borrarian
+        </Button>
+
+        {preview && (
+          <>
+            <span className="text-sm text-ink-secondary">
+              {preview.timeLogsCount} marcas · {preview.noveltiesCount} novedades · {preview.totalsCount} totales ·{' '}
+              {preview.usersAffected} trabajador{preview.usersAffected === 1 ? '' : 'es'}
+            </span>
+            {preview.timeLogsCount > 0 && (
+              <Button variant="danger" onClick={handleDelete} disabled={deleting}>
+                {deleting ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                Borrar definitivamente
+              </Button>
+            )}
+          </>
+        )}
+      </div>
+
+      {error && <p className="mt-3 rounded-lg bg-red-100 p-2 text-sm text-red-700">{error}</p>}
+      {result && <p className="mt-3 rounded-lg bg-emerald-50 p-2 text-sm text-emerald-700">{result}</p>}
+    </Card>
+  );
 }
 
 export default function ManualPayrollPage() {
@@ -402,6 +542,8 @@ function ManualPayrollPageInner() {
           </Card>
         </>
       )}
+
+      {getUser()?.role === 'ADMIN' && <DangerZone employees={employees} />}
     </div>
   );
 }

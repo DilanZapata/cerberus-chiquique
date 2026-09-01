@@ -811,6 +811,37 @@ export function createMark(
   return apiJson('/time-logs/manual-mark', { method: 'POST', body: JSON.stringify({ userId, workDate, logType, time }) });
 }
 
+// ---- Borrado masivo de marcas (zona de peligro) ----
+
+export interface BulkDeletePreview {
+  timeLogsCount: number;
+  noveltiesCount: number;
+  totalsCount: number;
+  usersAffected: number;
+}
+
+export interface BulkDeleteResult {
+  timeLogsDeleted: number;
+  noveltiesDeleted: number;
+  totalsDeleted: number;
+}
+
+function bulkDeleteQuery(from: string, to: string, userId?: string): string {
+  const params = new URLSearchParams({ from, to });
+  if (userId) params.set('userId', userId);
+  return params.toString();
+}
+
+/** Cuenta cuantas marcas/novedades se borrarian con este rango/empleado, sin borrar nada todavia. */
+export function previewBulkDeleteMarks(from: string, to: string, userId?: string): Promise<BulkDeletePreview> {
+  return apiJson(`/time-logs/bulk?${bulkDeleteQuery(from, to, userId)}`);
+}
+
+/** Borra TODAS las marcas (y novedades/totales derivados) de un rango de fechas, de un empleado o de toda la empresa. Irreversible. */
+export function bulkDeleteMarks(from: string, to: string, userId?: string): Promise<BulkDeleteResult> {
+  return apiJson(`/time-logs/bulk?${bulkDeleteQuery(from, to, userId)}`, { method: 'DELETE' });
+}
+
 // ---- Panel maestro (/master) ----
 // Fuera del JWT normal: usa una contrasena separada (header x-master-password),
 // asi que no reutiliza apiFetch/apiJson (esas redirigen a /login en un 401,

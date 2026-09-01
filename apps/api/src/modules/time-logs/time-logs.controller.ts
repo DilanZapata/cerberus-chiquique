@@ -102,6 +102,30 @@ export class TimeLogsController {
     return this.timeLogsService.createMark(currentUser.companyId, dto);
   }
 
+  /** Cuenta cuantas marcas/novedades se borrarian con este rango/empleado, sin borrar nada (para pedir confirmacion antes). */
+  @Roles(UserRole.ADMIN)
+  @Get('bulk')
+  previewBulkDelete(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('userId') userId: string | undefined,
+    @CurrentUser() currentUser: AuthenticatedUser,
+  ) {
+    return this.timeLogsService.previewBulkDelete(currentUser.companyId, from, to, userId);
+  }
+
+  /** Borra TODAS las marcas (y novedades/totales derivados) de un rango de fechas, de un empleado o de toda la empresa. Irreversible. */
+  @Roles(UserRole.ADMIN)
+  @Delete('bulk')
+  bulkDelete(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('userId') userId: string | undefined,
+    @CurrentUser() currentUser: AuthenticatedUser,
+  ) {
+    return this.timeLogsService.bulkDelete(currentUser.companyId, currentUser.id, from, to, userId);
+  }
+
   // Rutas ":id" AL FINAL del controller a proposito: Nest/Express matchea en
   // orden de declaracion, y "PUT/DELETE /time-logs/:id" interceptaria rutas
   // literales como "/time-logs/manual" (con id="manual") si se declararan

@@ -399,4 +399,120 @@ export class TimeLogsService {
 
     return this.noveltiesService.calculateAndPersistForDay(dto.userId, dto.workDate);
   }
+
+  /**
+   * Resuelve el rango de fechas y el filtro de usuario para un borrado
+   * masivo, validando que un userId puntual (si viene) pertenezca a la
+   * empresa -- para no poder borrar marcas de otra empresa pasando un id
+   * ajeno.
+   */
+  private async resolveBulkScope(companyId: string, from: string, to: string, userId?: string) {
+    if (!from || !to) throw new BadRequestException('Debes indicar una fecha "desde" y "hasta".');
+    const rangeStart = new Date(`${from}T00:00:00`);
+    const rangeEnd = addDays(new Date(`${to}T00:00:00`), 1);
+    if (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime())) {
+      throw new BadRequestException('Fechas invalidas.');
+    }
+    if (rangeStart >= rangeEnd) throw new BadRequestException('La fecha "desde" debe ser anterior o igual a "hasta".');
+
+    if (userId) {
+      const user = await this.prisma.user.findFirst({ where: { id: userId, companyId } });
+      if (!user) throw new NotFoundException(`Empleado ${userId} no encontrado`);
+      return { rangeStart, rangeEnd, userIds: [userId] };
+    }
+    const companyUsers = await this.prisma.user.findMany({ where: { companyId }, select: { id: true } });
+    return { rangeStart, rangeEnd, userIds: companyUsers.map((u) => u.id) };
+  }
+
+  /**
+   * Cuenta cuantas marcas/novedades/totales se borrarian con estos filtros,
+   * SIN borrar nada -- para que el panel administrativo pueda mostrar un
+   * numero antes de pedir confirmacion de un borrado irreversible.
+   */
+  async previewBulkDelete(companyId: string, from: string, to: string, userId?: string) {
+    const { rangeStart, rangeEnd, userIds } = await this.resolveBulkScope(companyId, from, to, userId);
+
+    const timeLogIds = (
+      await this.prisma.timeLog.findMany({
+        where: { loggedAt: { gte: rangeStart, lt: rangeEnd }, userId: { in: userIds } },
+        select: { id: true, userId: true },
+      })
+    );
+
+    const [noveltiesCount, totalsCount] = await Promise.all([
+      this.prisma.novelty.count({
+        where: {
+          userId: { in: userIds },
+          OR: [{ workDate: { gte: rangeStart, lt: rangeEnd } }, { sourceTimeLogId: { in: timeLogIds.map((t) => t.id) } }],
+        },
+      }),
+      this.prisma.attendanceDailyTotal.count({ where: { workDate: { gte: rangeStart, lt: rangeEnd }, userId: { in: userIds } } }),
+    ]);
+
+    return {
+      timeLogsCount: timeLogIds.length,
+      noveltiesCount,
+      totalsCount,
+      usersAffected: new Set(timeLogIds.map((t) => t.userId)).size,
+    };
+  }
+
+  /**
+   * Borra TODAS las marcas (y las novedades/totales derivados de ellas) de
+   * un rango de fechas -- de un empleado puntual, o de toda la empresa si
+   * no se pasa userId. Irreversible: no hay papelera ni backup automatico,
+   * por eso queda registrado en AuditLog con quien lo hizo y cuantas filas
+   * se borraron.
+   *
+   * Orden de borrado: primero las Novelty (evita violar la FK
+   * sourceTimeLogId -> TimeLog; su cascade se lleva de paso cualquier
+   * OvertimeApproval asociada), luego los totales, y al final los TimeLog
+   * por id (no por rango de fecha de nuevo, para no arrastrar un turno
+   * nocturno que haya quedado guardado cruzando la medianoche fuera del
+   * rango original).
+   */
+  async bulkDelete(companyId: string, performedById: string, from: string, to: string, userId?: string) {
+    const { rangeStart, rangeEnd, userIds } = await this.resolveBulkScope(companyId, from, to, userId);
+
+    const timeLogIds = (
+      await this.prisma.timeLog.findMany({
+        where: { loggedAt: { gte: rangeStart, lt: rangeEnd }, userId: { in: userIds } },
+        select: { id: true },
+      })
+    ).map((t) => t.id);
+
+    const [deletedNovelties, deletedTotals, deletedLogs] = await this.prisma.$transaction([
+      this.prisma.novelty.deleteMany({
+        where: {
+          userId: { in: userIds },
+          OR: [{ workDate: { gte: rangeStart, lt: rangeEnd } }, { sourceTimeLogId: { in: timeLogIds } }],
+        },
+      }),
+      this.prisma.attendanceDailyTotal.deleteMany({ where: { workDate: { gte: rangeStart, lt: rangeEnd }, userId: { in: userIds } } }),
+      this.prisma.timeLog.deleteMany({ where: { id: { in: timeLogIds } } }),
+    ]);
+
+    await this.prisma.auditLog.create({
+      data: {
+        companyId,
+        userId: performedById,
+        entity: 'TimeLog',
+        action: 'BULK_DELETE',
+        diff: {
+          from,
+          to,
+          scopeUserId: userId ?? null,
+          timeLogsDeleted: deletedLogs.count,
+          noveltiesDeleted: deletedNovelties.count,
+          totalsDeleted: deletedTotals.count,
+        },
+      },
+    });
+
+    return {
+      timeLogsDeleted: deletedLogs.count,
+      noveltiesDeleted: deletedNovelties.count,
+      totalsDeleted: deletedTotals.count,
+    };
+  }
 }
