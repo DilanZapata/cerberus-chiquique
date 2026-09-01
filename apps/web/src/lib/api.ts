@@ -450,6 +450,8 @@ export interface ScheduleSummary {
   name: string;
   weeklyHoursTarget?: string;
   defaultLunchMinutes?: number;
+  lunchWindowStart?: string;
+  lunchWindowEnd?: string;
   lunchToleranceMinutes?: number;
   finalExitWindowBeforeMin?: number;
   finalExitGraceMin?: number;
@@ -522,6 +524,8 @@ export function createSchedule(body: {
   name: string;
   weeklyHoursTarget?: number;
   defaultLunchMinutes?: number;
+  lunchWindowStart?: string;
+  lunchWindowEnd?: string;
   lunchToleranceMinutes?: number;
   finalExitWindowBeforeMin?: number;
   finalExitGraceMin?: number;
@@ -536,6 +540,8 @@ export function updateSchedule(
     name: string;
     weeklyHoursTarget: number;
     defaultLunchMinutes: number;
+    lunchWindowStart: string;
+    lunchWindowEnd: string;
     lunchToleranceMinutes: number;
     finalExitWindowBeforeMin: number;
     finalExitGraceMin: number;

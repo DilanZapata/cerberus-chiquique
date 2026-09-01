@@ -87,6 +87,10 @@ function ScheduleForm({
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [weeklyHoursTarget, setWeeklyHoursTarget] = useState(initial?.weeklyHoursTarget ?? '42');
+  const [defaultLunchMinutes, setDefaultLunchMinutes] = useState(String(initial?.defaultLunchMinutes ?? 60));
+  const [lunchWindowStart, setLunchWindowStart] = useState(initial?.lunchWindowStart ?? '12:00');
+  const [lunchWindowEnd, setLunchWindowEnd] = useState(initial?.lunchWindowEnd ?? '14:00');
+  const [lunchToleranceMinutes, setLunchToleranceMinutes] = useState(String(initial?.lunchToleranceMinutes ?? 10));
   const [finalExitWindowBeforeMin, setFinalExitWindowBeforeMin] = useState(String(initial?.finalExitWindowBeforeMin ?? 30));
   const [finalExitGraceMin, setFinalExitGraceMin] = useState(String(initial?.finalExitGraceMin ?? 180));
   const [days, setDays] = useState<ScheduleDayInput[]>(() => {
@@ -116,6 +120,10 @@ function ScheduleForm({
       const body = {
         name,
         weeklyHoursTarget: weeklyHoursTarget ? Number(weeklyHoursTarget) : undefined,
+        defaultLunchMinutes: defaultLunchMinutes ? Number(defaultLunchMinutes) : undefined,
+        lunchWindowStart: lunchWindowStart || undefined,
+        lunchWindowEnd: lunchWindowEnd || undefined,
+        lunchToleranceMinutes: lunchToleranceMinutes ? Number(lunchToleranceMinutes) : undefined,
         finalExitWindowBeforeMin: finalExitWindowBeforeMin ? Number(finalExitWindowBeforeMin) : undefined,
         finalExitGraceMin: finalExitGraceMin ? Number(finalExitGraceMin) : undefined,
         days,
@@ -156,6 +164,54 @@ function ScheduleForm({
           className={`mt-1 w-full ${inputClass}`}
         />
       </div>
+
+      <div className="space-y-2 rounded-md bg-surface-page p-3">
+        <span className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Almuerzo</span>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className={labelClass}>Entrada a almorzar (desde)</label>
+            <input
+              type="time"
+              value={lunchWindowStart}
+              onChange={(e) => setLunchWindowStart(e.target.value)}
+              className={`mt-1 w-full ${inputClass}`}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Regreso de almuerzo (hasta)</label>
+            <input
+              type="time"
+              value={lunchWindowEnd}
+              onChange={(e) => setLunchWindowEnd(e.target.value)}
+              className={`mt-1 w-full ${inputClass}`}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Duracion (min)</label>
+            <input
+              type="number"
+              min={0}
+              value={defaultLunchMinutes}
+              onChange={(e) => setDefaultLunchMinutes(e.target.value)}
+              className={`mt-1 w-full ${inputClass}`}
+            />
+          </div>
+        </div>
+        <div>
+          <label className={labelClass}>Tolerancia (min)</label>
+          <input
+            type="number"
+            min={0}
+            value={lunchToleranceMinutes}
+            onChange={(e) => setLunchToleranceMinutes(e.target.value)}
+            className={`mt-1 w-32 ${inputClass}`}
+          />
+          <p className="mt-1 text-xs text-ink-muted">
+            Ventana en la que se puede marcar la salida/regreso de almuerzo sin generar novedad de tardanza.
+          </p>
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelClass}>Ventana de salida final (min antes)</label>

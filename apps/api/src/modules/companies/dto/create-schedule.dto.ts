@@ -1,4 +1,4 @@
-import { ArrayMinSize, IsArray, IsNumber, IsOptional, IsString, Min, MinLength, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsNumber, IsOptional, IsString, Matches, Min, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ScheduleDayDto } from './schedule-day.dto';
 
@@ -16,6 +16,16 @@ export class CreateScheduleDto {
   @IsNumber()
   @Min(0)
   defaultLunchMinutes?: number;
+
+  /** Formato "HH:mm". Desde que hora se puede marcar la salida a almorzar. */
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'lunchWindowStart debe tener formato HH:mm' })
+  lunchWindowStart?: string;
+
+  /** Formato "HH:mm". Hasta que hora se puede marcar el regreso de almuerzo. */
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'lunchWindowEnd debe tener formato HH:mm' })
+  lunchWindowEnd?: string;
 
   @IsOptional()
   @IsNumber()

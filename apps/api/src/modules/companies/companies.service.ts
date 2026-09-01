@@ -73,6 +73,8 @@ export class CompaniesService {
         name: dto.name,
         weeklyHoursTarget: dto.weeklyHoursTarget,
         defaultLunchMinutes: dto.defaultLunchMinutes,
+        lunchWindowStart: dto.lunchWindowStart ? hhmmToTime(dto.lunchWindowStart) : undefined,
+        lunchWindowEnd: dto.lunchWindowEnd ? hhmmToTime(dto.lunchWindowEnd) : undefined,
         lunchToleranceMinutes: dto.lunchToleranceMinutes,
         finalExitWindowBeforeMin: dto.finalExitWindowBeforeMin,
         finalExitGraceMin: dto.finalExitGraceMin,
@@ -93,6 +95,8 @@ export class CompaniesService {
         name: dto.name,
         weeklyHoursTarget: dto.weeklyHoursTarget,
         defaultLunchMinutes: dto.defaultLunchMinutes,
+        lunchWindowStart: dto.lunchWindowStart ? hhmmToTime(dto.lunchWindowStart) : undefined,
+        lunchWindowEnd: dto.lunchWindowEnd ? hhmmToTime(dto.lunchWindowEnd) : undefined,
         lunchToleranceMinutes: dto.lunchToleranceMinutes,
         finalExitWindowBeforeMin: dto.finalExitWindowBeforeMin,
         finalExitGraceMin: dto.finalExitGraceMin,
@@ -112,9 +116,11 @@ export class CompaniesService {
   }
 
   /** Los campos @db.Time de Prisma llegan como Date (epoch UTC); el frontend los quiere en "HH:mm". */
-  private serializeSchedule<T extends { details: ScheduleDetail[] }>(schedule: T) {
+  private serializeSchedule<T extends { details: ScheduleDetail[]; lunchWindowStart: Date; lunchWindowEnd: Date }>(schedule: T) {
     return {
       ...schedule,
+      lunchWindowStart: timeToHHmm(schedule.lunchWindowStart),
+      lunchWindowEnd: timeToHHmm(schedule.lunchWindowEnd),
       details: schedule.details.map((d) => ({
         dayOfWeek: d.dayOfWeek,
         isWorkingDay: d.isWorkingDay,
