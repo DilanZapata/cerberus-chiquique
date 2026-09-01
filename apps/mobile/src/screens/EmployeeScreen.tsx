@@ -6,8 +6,16 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import { useAuth } from '../context/AuthContext';
-import { mobileClock } from '../services/api';
+import { ApiError, mobileClock } from '../services/api';
 import { authenticateWithBiometrics, isBiometricAvailable } from '../services/biometrics';
+
+/** "3 min 12 s" / "45 s" -- para el contador del boton y el mensaje de espera. */
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
 
 const LOG_TYPE_LABELS: Record<string, string> = {
   CHECK_IN: 'Entrada registrada',
@@ -28,12 +36,38 @@ export default function EmployeeScreen({ navigation }: Props) {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
+  // Cuenta regresiva local (solo mejora visual: deshabilita el boton y
+  // muestra cuanto falta). La seguridad real la garantiza el backend --
+  // si el reloj del telefono esta desfasado o la app se cerro y reabrio
+  // antes de que terminara la espera, el backend igual rechaza el
+  // intento y este contador se resincroniza con el `secondsRemaining`
+  // que devuelve el error.
+  const [cooldownSecondsLeft, setCooldownSecondsLeft] = useState(0);
+  const cooldownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function startCooldown(seconds: number) {
+    if (cooldownInterval.current) clearInterval(cooldownInterval.current);
+    setCooldownSecondsLeft(seconds);
+    cooldownInterval.current = setInterval(() => {
+      setCooldownSecondsLeft((prev) => {
+        if (prev <= 1) {
+          if (cooldownInterval.current) clearInterval(cooldownInterval.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
   useEffect(() => {
     isBiometricAvailable().then(setBiometricAvailable);
+    return () => {
+      if (cooldownInterval.current) clearInterval(cooldownInterval.current);
+    };
   }, []);
 
   async function handleClock() {
-    if (!session) return;
+    if (!session || cooldownSecondsLeft > 0) return;
     setLoading(true);
     setError(null);
     setMessage(null);
@@ -67,8 +101,18 @@ export default function EmployeeScreen({ navigation }: Props) {
         imageBase64,
       });
       setMessage(`${LOG_TYPE_LABELS[result.logType]} (${result.distanceMeters}m de la sede).`);
+      // El backend es quien realmente impide un nuevo registro antes de 5
+      // minutos (DUPLICATE_REGISTRATION_WINDOW_MIN); este contador es solo
+      // para que el boton no invite a tocarlo de nuevo mientras tanto.
+      startCooldown(5 * 60);
     } catch (err) {
       setError((err as Error).message);
+      // Si el backend rechazo por el guard de duplicados, viene con
+      // secondsRemaining -- resincroniza el contador local con el real en
+      // vez de dejarlo en 0 (ej. la app se cerro y reabrio a mitad de la
+      // espera, o dos dispositivos marcaron casi al mismo tiempo).
+      const seconds = (err as ApiError).secondsRemaining;
+      if (typeof seconds === 'number' && seconds > 0) startCooldown(seconds);
     } finally {
       setLoading(false);
     }
@@ -94,8 +138,19 @@ export default function EmployeeScreen({ navigation }: Props) {
 
       {error && <Text style={styles.error}>{error}</Text>}
       {message && <Text style={styles.success}>{message}</Text>}
-      <TouchableOpacity style={styles.button} onPress={handleClock} disabled={loading}>
-        {loading ? <ActivityIndicator color="white" /> : <Text style={styles.buttonText}>Marcar ahora</Text>}
+      {cooldownSecondsLeft > 0 && (
+        <Text style={styles.cooldownHint}>Podras volver a marcar en {formatCountdown(cooldownSecondsLeft)}.</Text>
+      )}
+      <TouchableOpacity
+        style={[styles.button, cooldownSecondsLeft > 0 && styles.buttonDisabled]}
+        onPress={handleClock}
+        disabled={loading || cooldownSecondsLeft > 0}
+      >
+        {loading ? (
+          <ActivityIndicator color="white" />
+        ) : (
+          <Text style={styles.buttonText}>{cooldownSecondsLeft > 0 ? formatCountdown(cooldownSecondsLeft) : 'Marcar ahora'}</Text>
+        )}
       </TouchableOpacity>
       <TouchableOpacity style={styles.historyButton} onPress={() => navigation.navigate('MyHistory')}>
         <Text style={styles.historyButtonText}>Ver mi historial</Text>
@@ -119,7 +174,9 @@ const styles = StyleSheet.create({
   error: { color: '#b91c1c', textAlign: 'center' },
   success: { color: '#047857', textAlign: 'center' },
   button: { backgroundColor: '#0f172a', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 8, marginTop: 8 },
+  buttonDisabled: { backgroundColor: '#94a3b8' },
   buttonText: { color: 'white', fontWeight: '700', fontSize: 16 },
+  cooldownHint: { color: '#475569', fontSize: 12, textAlign: 'center' },
   historyButton: { marginTop: 10, padding: 8 },
   historyButtonText: { color: '#0f172a', fontWeight: '600', fontSize: 13, textDecorationLine: 'underline' },
   logoutButton: { marginTop: 16, padding: 8 },

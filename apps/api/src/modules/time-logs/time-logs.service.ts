@@ -4,7 +4,8 @@ import { PrismaService } from '../../database/prisma.service';
 import { addDays } from '../../common/utils/time.util';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
 import { findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
-import { saveTimeLogPhoto } from '../../common/utils/photo-storage.util';
+import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
+import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { NoveltiesService } from '../novelties/novelties.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
@@ -125,21 +126,44 @@ export class TimeLogsService {
       throw new BadRequestException('Ya completaste las 4 marcas de hoy.');
     }
 
+    // Chequeo rapido (sin lock) ANTES de tocar la foto: cubre el caso comun
+    // de un doble-toque accidental sin gastar el guardado/redimension de la
+    // imagen. El chequeo autoritativo (con lock, ver mas abajo) es el que
+    // realmente cierra la condicion de carrera entre dos dispositivos.
+    const earlyCheck = await checkRecentSelfServiceMark(this.prisma, userId, now);
+    if (earlyCheck?.blocked) {
+      throw new BadRequestException({ message: duplicateGuardMessage(earlyCheck), secondsRemaining: earlyCheck.secondsRemaining });
+    }
+
     const photoUrl = dto.imageBase64 ? await saveTimeLogPhoto(dto.imageBase64, 'mobile') : undefined;
 
-    await this.prisma.timeLog.create({
-      data: {
-        userId,
-        workSiteId: user.workSiteId,
-        logType: resolved.nextLogType,
-        loggedAt: now,
-        source: TimeLogSource.MOBILE_GPS,
-        latitude: dto.latitude,
-        longitude: dto.longitude,
-        gpsValid,
-        photoUrl,
-      },
-    });
+    try {
+      await withUserRegistrationLock(this.prisma, userId, async (tx) => {
+        const finalCheck = await checkRecentSelfServiceMark(tx, userId, now);
+        if (finalCheck?.blocked) {
+          throw new BadRequestException({ message: duplicateGuardMessage(finalCheck), secondsRemaining: finalCheck.secondsRemaining });
+        }
+
+        await tx.timeLog.create({
+          data: {
+            userId,
+            workSiteId: user.workSiteId,
+            logType: resolved.nextLogType,
+            loggedAt: now,
+            source: TimeLogSource.MOBILE_GPS,
+            latitude: dto.latitude,
+            longitude: dto.longitude,
+            gpsValid,
+            photoUrl,
+          },
+        });
+      });
+    } catch (err) {
+      // La marca no quedo creada (bloqueada por el guard, o cualquier otro
+      // error): no dejar la foto huerfana en disco.
+      if (photoUrl) deleteTimeLogPhoto(photoUrl);
+      throw err;
+    }
 
     await this.noveltiesService.calculateAndPersistForDay(userId, resolved.workDate);
 

@@ -4,7 +4,8 @@ import { TimeLogSource, User, WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
 import { resolveNextMark } from '../../common/utils/shift-marks.util';
-import { saveTimeLogPhoto } from '../../common/utils/photo-storage.util';
+import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
+import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { NoveltiesService } from '../novelties/novelties.service';
 import { FaceRecognitionService } from '../face-recognition/face-recognition.service';
 import { KioskClockDto } from './dto/kiosk-clock.dto';
@@ -108,21 +109,49 @@ export class KioskService {
       throw new BadRequestException(`${user.fullName} ya completo las 4 marcas de hoy.`);
     }
 
+    // Chequeo rapido (sin lock) ANTES de tocar la foto: cubre el caso comun
+    // de un doble-toque accidental en el kiosco sin gastar el
+    // guardado/redimension de la imagen. El chequeo autoritativo (con lock,
+    // ver mas abajo) es el que realmente cierra la condicion de carrera
+    // entre dos dispositivos marcando por la misma persona casi a la vez.
+    const earlyCheck = await checkRecentSelfServiceMark(this.prisma, user.id, now);
+    if (earlyCheck?.blocked) {
+      throw new BadRequestException({
+        message: duplicateGuardMessage(earlyCheck, user.fullName),
+        secondsRemaining: earlyCheck.secondsRemaining,
+      });
+    }
+
     const photoUrl = imageBase64 ? await saveTimeLogPhoto(imageBase64, 'kiosk') : undefined;
 
-    await this.prisma.timeLog.create({
-      data: {
-        userId: user.id,
-        workSiteId,
-        logType: resolved.nextLogType,
-        loggedAt: now,
-        source: TimeLogSource.KIOSK,
-        latitude,
-        longitude,
-        gpsValid: true, // ya se valido que cae dentro del radio de la sede al identificarla (findNearbyWorkSites)
-        photoUrl,
-      },
-    });
+    try {
+      await withUserRegistrationLock(this.prisma, user.id, async (tx) => {
+        const finalCheck = await checkRecentSelfServiceMark(tx, user.id, now);
+        if (finalCheck?.blocked) {
+          throw new BadRequestException({
+            message: duplicateGuardMessage(finalCheck, user.fullName),
+            secondsRemaining: finalCheck.secondsRemaining,
+          });
+        }
+
+        await tx.timeLog.create({
+          data: {
+            userId: user.id,
+            workSiteId,
+            logType: resolved.nextLogType,
+            loggedAt: now,
+            source: TimeLogSource.KIOSK,
+            latitude,
+            longitude,
+            gpsValid: true, // ya se valido que cae dentro del radio de la sede al identificarla (findNearbyWorkSites)
+            photoUrl,
+          },
+        });
+      });
+    } catch (err) {
+      if (photoUrl) deleteTimeLogPhoto(photoUrl);
+      throw err;
+    }
 
     await this.noveltiesService.calculateAndPersistForDay(user.id, resolved.workDate);
 

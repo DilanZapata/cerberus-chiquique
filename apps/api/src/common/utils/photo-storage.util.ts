@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createCanvas, loadImage } from 'canvas';
 import { decodeBase64Image } from './image.util';
@@ -46,4 +46,22 @@ export async function saveTimeLogPhoto(imageBase64: string, subfolder: string): 
   writeFileSync(join(dir, filename), resized);
 
   return `/uploads/${subfolder}/${filename}`;
+}
+
+/**
+ * Borra una foto guardada por `saveTimeLogPhoto`, dada su ruta relativa
+ * ("/uploads/<subfolder>/<archivo>"). Uso: limpiar la foto de un marcaje
+ * que se guardo en disco pero cuyo TimeLog termino rechazado (ej. por el
+ * guard de registros duplicados) para no acumular archivos huerfanos.
+ * Best-effort: nunca lanza -- un fallo al borrar no debe tumbar la
+ * respuesta de error que ya se esta devolviendo por la razon original.
+ */
+export function deleteTimeLogPhoto(photoUrl: string): void {
+  try {
+    const relative = photoUrl.replace(/^\/uploads\//, '');
+    const fullPath = join(UPLOADS_ROOT, relative);
+    if (existsSync(fullPath)) unlinkSync(fullPath);
+  } catch {
+    // Ignorado a proposito, ver comentario arriba.
+  }
 }

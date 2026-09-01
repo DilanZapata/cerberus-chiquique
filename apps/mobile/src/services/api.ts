@@ -3,10 +3,22 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001/api';
 // fuera del prefijo /api (ver useStaticAssets en apps/api/src/main.ts).
 const API_ORIGIN = API_URL.replace(/\/api\/?$/, '');
 
+/**
+ * Error con campos extra que algunos endpoints agregan al cuerpo del error
+ * (ej. `secondsRemaining` del guard de registros duplicados en
+ * kiosco/mobile-clock) ademas del `message` de siempre, para que la UI
+ * pueda mostrar un contador sin tener que parsear el texto.
+ */
+export class ApiError extends Error {
+  secondsRemaining?: number;
+}
+
 async function handle(res: Response) {
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.message ?? `Error ${res.status}`);
+    const err = new ApiError(body?.message ?? `Error ${res.status}`);
+    if (typeof body?.secondsRemaining === 'number') err.secondsRemaining = body.secondsRemaining;
+    throw err;
   }
   return res.json();
 }

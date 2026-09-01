@@ -25,11 +25,23 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   return res;
 }
 
+/**
+ * Error con campos extra que algunos endpoints agregan al cuerpo del error
+ * (ej. `secondsRemaining` del guard de registros duplicados en
+ * kiosco/mobile-clock) ademas del `message` de siempre, para que la UI
+ * pueda mostrar un contador sin tener que parsear el texto.
+ */
+export class ApiError extends Error {
+  secondsRemaining?: number;
+}
+
 async function apiJson<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await apiFetch(path, options);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.message ?? `Error ${res.status} al llamar ${path}`);
+    const err = new ApiError(body?.message ?? `Error ${res.status} al llamar ${path}`);
+    if (typeof body?.secondsRemaining === 'number') err.secondsRemaining = body.secondsRemaining;
+    throw err;
   }
   return res.json();
 }
