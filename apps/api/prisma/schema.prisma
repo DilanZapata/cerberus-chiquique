@@ -44,6 +44,7 @@ enum TimeLogSource {
   MOBILE_GPS
   WEB
   MANUAL
+  AUTO_CLOSE
 
   @@map("time_log_source_enum")
 }
@@ -100,6 +101,8 @@ enum NoveltyCode {
   HORA_EXTRA_PENDIENTE
   DESCANSO_COMPENSATORIO_PENDIENTE
   LIMITE_HORAS_EXTRA_EXCEDIDO
+  SALIDA_NO_REGISTRADA
+  JORNADA_REQUIERE_REVISION
 
   @@map("novelty_code_enum")
 }

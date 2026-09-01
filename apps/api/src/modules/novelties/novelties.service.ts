@@ -48,7 +48,7 @@ const DAY_OF_WEEK_BY_INDEX: DayOfWeek[] = [
 
 const SUNDAY_HOLIDAY_CODES: PrismaNoveltyCode[] = ['DDCOF', 'DNCOF'] as PrismaNoveltyCode[];
 
-interface ShiftResolution {
+export interface ShiftResolution {
   plannedShift?: PlannedShiftWindow;
   /** El horario (cargo, individual o rutina) marca este dia como no laboral. */
   isScheduledRestDay: boolean;
@@ -326,7 +326,8 @@ export class NoveltiesService {
    *  2. Horario asignado directamente al empleado (UserSchedule) - anula el del cargo.
    *  3. Horario del cargo asignado al empleado (Position.schedule) - el caso comun.
    */
-  private async getPlannedShift(userId: string, date: Date): Promise<ShiftResolution> {
+  /** Publico: reutilizado por resolveMarkContext y por el cierre automatico de jornadas (jornada-cierre.service.ts). */
+  async getPlannedShift(userId: string, date: Date): Promise<ShiftResolution> {
     const shift = await this.prisma.shift.findUnique({
       where: { userId_workDate: { userId, workDate: date } },
     });

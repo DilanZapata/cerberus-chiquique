@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { TimeLogsService } from './time-logs.service';
+import { JornadaCierreService } from './jornada-cierre.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
 import { ManualTimeLogDto } from './dto/manual-time-log.dto';
 import { CreateMarkDto, UpdateMarkDto } from './dto/single-mark.dto';
@@ -9,7 +10,17 @@ import { Roles } from '../../common/decorators/roles.decorator';
 
 @Controller('time-logs')
 export class TimeLogsController {
-  constructor(private readonly timeLogsService: TimeLogsService) {}
+  constructor(
+    private readonly timeLogsService: TimeLogsService,
+    private readonly jornadaCierreService: JornadaCierreService,
+  ) {}
+
+  /** Dispara el cierre automatico de jornadas abiertas ya mismo, sin esperar el cron (para pruebas/soporte). */
+  @Roles(UserRole.ADMIN)
+  @Post('close-overdue-shifts')
+  closeOverdueShifts() {
+    return this.jornadaCierreService.closeOverdueOpenShifts();
+  }
 
   /** Modo Empleado: marca su propia entrada/salida validando GPS contra su sede asignada. */
   @Post('mobile-clock')

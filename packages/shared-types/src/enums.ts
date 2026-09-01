@@ -13,6 +13,8 @@ export enum TimeLogSource {
   MOBILE_GPS = 'MOBILE_GPS',
   WEB = 'WEB',
   MANUAL = 'MANUAL',
+  // Salida generada por el cierre automatico de jornadas abiertas, no por el empleado.
+  AUTO_CLOSE = 'AUTO_CLOSE',
 }
 
 export enum ShiftRotation {
@@ -47,6 +49,10 @@ export enum NoveltyCode {
   DESCANSO_COMPENSATORIO_PENDIENTE = 'DESCANSO_COMPENSATORIO_PENDIENTE',
   // Alerta de cumplimiento: se supero el tope legal de horas extra (2h/dia o 12h/semana).
   LIMITE_HORAS_EXTRA_EXCEDIDO = 'LIMITE_HORAS_EXTRA_EXCEDIDO',
+  // El cierre automatico de jornadas genero una salida porque el empleado nunca la marco.
+  SALIDA_NO_REGISTRADA = 'SALIDA_NO_REGISTRADA',
+  // Caso ambiguo que el sistema no pudo resolver solo; queda pendiente de revision manual.
+  JORNADA_REQUIERE_REVISION = 'JORNADA_REQUIERE_REVISION',
 }
 
 // Codigos que van como columnas acumulativas en el reporte de nomina (seccion 3 del brief)
