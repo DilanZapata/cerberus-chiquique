@@ -23,6 +23,16 @@ export class UpdateScheduleDto {
   @Min(0)
   lunchToleranceMinutes?: number;
 
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  finalExitWindowBeforeMin?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  finalExitGraceMin?: number;
+
   /** Si se envia, reemplaza los 7 dias existentes. */
   @IsOptional()
   @IsArray()

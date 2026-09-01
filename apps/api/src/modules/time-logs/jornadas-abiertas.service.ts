@@ -5,7 +5,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { findShiftMarks } from '../../common/utils/shift-marks.util';
 import { startOfLocalDay } from '../../common/utils/time.util';
 import { NoveltiesService } from '../novelties/novelties.service';
-import { FINAL_EXIT_GRACE_MIN } from './jornada-cierre.service';
+import { DEFAULT_FINAL_EXIT_GRACE_MIN } from './jornada-cierre.service';
 import { ReviewJornadaDto } from './dto/review-jornada.dto';
 
 function localDateKey(date: Date): string {
@@ -65,14 +65,14 @@ export class JornadasAbiertasService {
       const marks = await findShiftMarks(this.prisma, user.id, date);
       if (!marks.checkIn || marks.checkOut) continue; // sin jornada abierta ese dia, o ya completa
 
-      const { plannedShift } = await this.noveltiesService.getPlannedShift(user.id, date);
+      const { plannedShift, finalExitGraceMin } = await this.noveltiesService.getPlannedShift(user.id, date);
       let estado: JornadaAbiertaEstado;
       if (!plannedShift) {
         estado = 'SIN_HORARIO';
       } else if (now < plannedShift.end) {
         continue; // sigue dentro de su horario, jornada normal en curso
       } else {
-        const graceEnd = new Date(plannedShift.end.getTime() + FINAL_EXIT_GRACE_MIN * 60_000);
+        const graceEnd = new Date(plannedShift.end.getTime() + (finalExitGraceMin ?? DEFAULT_FINAL_EXIT_GRACE_MIN) * 60_000);
         estado = now < graceEnd ? 'PENDIENTE_CIERRE' : 'VENCIDA_CIERRE_AUTOMATICO';
       }
 

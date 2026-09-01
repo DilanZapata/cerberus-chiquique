@@ -74,6 +74,8 @@ export class CompaniesService {
         weeklyHoursTarget: dto.weeklyHoursTarget,
         defaultLunchMinutes: dto.defaultLunchMinutes,
         lunchToleranceMinutes: dto.lunchToleranceMinutes,
+        finalExitWindowBeforeMin: dto.finalExitWindowBeforeMin,
+        finalExitGraceMin: dto.finalExitGraceMin,
       },
     });
     await this.prisma.scheduleDetail.createMany({ data: this.buildDetailRows(schedule.id, dto.days) });
@@ -92,6 +94,8 @@ export class CompaniesService {
         weeklyHoursTarget: dto.weeklyHoursTarget,
         defaultLunchMinutes: dto.defaultLunchMinutes,
         lunchToleranceMinutes: dto.lunchToleranceMinutes,
+        finalExitWindowBeforeMin: dto.finalExitWindowBeforeMin,
+        finalExitGraceMin: dto.finalExitGraceMin,
       },
     });
 

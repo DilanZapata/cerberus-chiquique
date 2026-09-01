@@ -87,6 +87,8 @@ function ScheduleForm({
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [weeklyHoursTarget, setWeeklyHoursTarget] = useState(initial?.weeklyHoursTarget ?? '42');
+  const [finalExitWindowBeforeMin, setFinalExitWindowBeforeMin] = useState(String(initial?.finalExitWindowBeforeMin ?? 30));
+  const [finalExitGraceMin, setFinalExitGraceMin] = useState(String(initial?.finalExitGraceMin ?? 180));
   const [days, setDays] = useState<ScheduleDayInput[]>(() => {
     if (!initial?.details) return defaultDays();
     return DAYS.map(({ value }) => {
@@ -111,7 +113,13 @@ function ScheduleForm({
     setSaving(true);
     setError(null);
     try {
-      const body = { name, weeklyHoursTarget: weeklyHoursTarget ? Number(weeklyHoursTarget) : undefined, days };
+      const body = {
+        name,
+        weeklyHoursTarget: weeklyHoursTarget ? Number(weeklyHoursTarget) : undefined,
+        finalExitWindowBeforeMin: finalExitWindowBeforeMin ? Number(finalExitWindowBeforeMin) : undefined,
+        finalExitGraceMin: finalExitGraceMin ? Number(finalExitGraceMin) : undefined,
+        days,
+      };
       if (initial) {
         await updateSchedule(initial.id, body);
       } else {
@@ -147,6 +155,34 @@ function ScheduleForm({
           onChange={(e) => setWeeklyHoursTarget(e.target.value)}
           className={`mt-1 w-full ${inputClass}`}
         />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={labelClass}>Ventana de salida final (min antes)</label>
+          <input
+            type="number"
+            min={0}
+            value={finalExitWindowBeforeMin}
+            onChange={(e) => setFinalExitWindowBeforeMin(e.target.value)}
+            className={`mt-1 w-full ${inputClass}`}
+          />
+          <p className="mt-1 text-xs text-ink-muted">
+            Desde cuantos minutos antes de la hora de salida, una marca siempre se interpreta como salida final.
+          </p>
+        </div>
+        <div>
+          <label className={labelClass}>Margen para cierre automatico (min)</label>
+          <input
+            type="number"
+            min={0}
+            value={finalExitGraceMin}
+            onChange={(e) => setFinalExitGraceMin(e.target.value)}
+            className={`mt-1 w-full ${inputClass}`}
+          />
+          <p className="mt-1 text-xs text-ink-muted">
+            Cuanto tiempo despues de la salida programada se espera antes de cerrar la jornada automaticamente si nadie marco salida.
+          </p>
+        </div>
       </div>
 
       <div className="space-y-2">

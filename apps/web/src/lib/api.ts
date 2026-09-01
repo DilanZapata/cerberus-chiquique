@@ -451,6 +451,8 @@ export interface ScheduleSummary {
   weeklyHoursTarget?: string;
   defaultLunchMinutes?: number;
   lunchToleranceMinutes?: number;
+  finalExitWindowBeforeMin?: number;
+  finalExitGraceMin?: number;
   details?: ScheduleDetail[];
 }
 
@@ -521,6 +523,8 @@ export function createSchedule(body: {
   weeklyHoursTarget?: number;
   defaultLunchMinutes?: number;
   lunchToleranceMinutes?: number;
+  finalExitWindowBeforeMin?: number;
+  finalExitGraceMin?: number;
   days: ScheduleDayInput[];
 }): Promise<ScheduleSummary> {
   return apiJson('/companies/me/schedules', { method: 'POST', body: JSON.stringify(body) });
@@ -533,6 +537,8 @@ export function updateSchedule(
     weeklyHoursTarget: number;
     defaultLunchMinutes: number;
     lunchToleranceMinutes: number;
+    finalExitWindowBeforeMin: number;
+    finalExitGraceMin: number;
     days: ScheduleDayInput[];
   }>,
 ): Promise<ScheduleSummary> {

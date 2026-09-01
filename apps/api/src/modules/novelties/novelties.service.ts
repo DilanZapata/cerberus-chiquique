@@ -52,6 +52,15 @@ export interface ShiftResolution {
   plannedShift?: PlannedShiftWindow;
   /** El horario (cargo, individual o rutina) marca este dia como no laboral. */
   isScheduledRestDay: boolean;
+  /**
+   * Ventanas configurables del Schedule resuelto (Fase 4). Undefined cuando
+   * el turno viene de una rutina rotativa (Shift) o no hay horario asignado
+   * -- en esos casos el llamador debe aplicar sus propios defaults, ya que
+   * un Shift generado por rutina no tiene un Schedule propio del cual leer
+   * estos valores.
+   */
+  finalExitWindowBeforeMin?: number;
+  finalExitGraceMin?: number;
 }
 
 @Injectable()
@@ -301,7 +310,11 @@ export class NoveltiesService {
    * dia no tiene cupo ordinario propio.
    */
   private resolveShiftFromSchedule(
-    schedule: { details: { dayOfWeek: DayOfWeek; isWorkingDay: boolean; startTime: Date | null; endTime: Date | null }[] },
+    schedule: {
+      details: { dayOfWeek: DayOfWeek; isWorkingDay: boolean; startTime: Date | null; endTime: Date | null }[];
+      finalExitWindowBeforeMin: number;
+      finalExitGraceMin: number;
+    },
     date: Date,
   ): ShiftResolution {
     const dayOfWeek = DAY_OF_WEEK_BY_INDEX[date.getDay()];
@@ -317,6 +330,8 @@ export class NoveltiesService {
         end: combineDateAndTime(date, detail.endTime),
       },
       isScheduledRestDay: false,
+      finalExitWindowBeforeMin: schedule.finalExitWindowBeforeMin,
+      finalExitGraceMin: schedule.finalExitGraceMin,
     };
   }
 
@@ -386,6 +401,12 @@ export class NoveltiesService {
       yesterdayPlannedShift: yesterdayShift.plannedShift,
       allowsLunchSkip: user.allowsLunchSkip,
       defaultLunchMinutes: lunchPolicy.defaultLunchMinutes,
+      // Preferimos las ventanas del horario de hoy; si hoy no tiene Schedule
+      // resuelto (ej. turno de rutina rotativa) usamos las de ayer para no
+      // perder la configuracion en el caso de continuar un turno nocturno.
+      // Si ninguno tiene, resolveNextMark aplica sus propios defaults.
+      finalExitWindowBeforeMin: todayShift.finalExitWindowBeforeMin ?? yesterdayShift.finalExitWindowBeforeMin,
+      finalExitGraceMin: todayShift.finalExitGraceMin ?? yesterdayShift.finalExitGraceMin,
     };
   }
 

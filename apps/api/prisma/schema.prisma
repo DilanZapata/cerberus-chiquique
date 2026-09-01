@@ -275,6 +275,13 @@ model Schedule {
   lunchWindowStart        DateTime @default(dbgenerated("'12:00'")) @map("lunch_window_start") @db.Time
   lunchWindowEnd          DateTime @default(dbgenerated("'14:00'")) @map("lunch_window_end") @db.Time
   lunchToleranceMinutes   Int      @default(10) @map("lunch_tolerance_minutes")
+  // Desde cuantos minutos antes de la salida programada, una marca siempre
+  // se interpreta como salida final (Fase 4 del rediseno de asistencia).
+  finalExitWindowBeforeMin Int     @default(30) @map("final_exit_window_before_min")
+  // Margen tras la salida programada antes de considerar la jornada vencida
+  // (usado tanto para permitir que un turno nocturno cruce medianoche como
+  // para el cierre automatico de jornadas abiertas).
+  finalExitGraceMin       Int      @default(180) @map("final_exit_grace_min")
   createdAt               DateTime @default(now()) @map("created_at")
   updatedAt               DateTime @updatedAt @map("updated_at")
 

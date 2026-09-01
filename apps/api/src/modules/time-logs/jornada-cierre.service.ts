@@ -7,13 +7,13 @@ import { findShiftMarks } from '../../common/utils/shift-marks.util';
 import { NoveltiesService } from '../novelties/novelties.service';
 
 export const LOOKBACK_DAYS = 3;
-// Margen tras la hora de salida programada antes de considerar una jornada
-// "abierta e incompleta" y candidata a cierre automatico. Fase 4 movera esto
-// a una columna configurable de Schedule (finalExitGraceMin); por ahora es
-// una constante razonable, igual que las de shift-marks.util.ts. Exportada
-// para que jornadas-abiertas.service.ts clasifique el mismo estado sin
-// duplicar el numero.
-export const FINAL_EXIT_GRACE_MIN = 180;
+// Margen por defecto (minutos) tras la hora de salida programada antes de
+// considerar una jornada "abierta e incompleta" y candidata a cierre
+// automatico, usado solo cuando el horario resuelto no trae su propio
+// Schedule.finalExitGraceMin (ej. turno de rutina rotativa). Exportada para
+// que jornadas-abiertas.service.ts clasifique el mismo estado sin duplicar
+// el numero.
+export const DEFAULT_FINAL_EXIT_GRACE_MIN = 180;
 
 function localDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -73,10 +73,11 @@ export class JornadaCierreService {
     const marks = await findShiftMarks(this.prisma, userId, dayStart);
     if (!marks.checkIn || marks.checkOut) return false;
 
-    const { plannedShift } = await this.noveltiesService.getPlannedShift(userId, dayStart);
+    const { plannedShift, finalExitGraceMin } = await this.noveltiesService.getPlannedShift(userId, dayStart);
     if (!plannedShift) return false; // sin horario resuelto: no se auto-cierra, queda para revision manual
 
-    const graceEnd = new Date(plannedShift.end.getTime() + FINAL_EXIT_GRACE_MIN * 60_000);
+    const graceMinutes = finalExitGraceMin ?? DEFAULT_FINAL_EXIT_GRACE_MIN;
+    const graceEnd = new Date(plannedShift.end.getTime() + graceMinutes * 60_000);
     if (now < graceEnd) return false;
 
     const user = await this.prisma.user.findUniqueOrThrow({
@@ -129,9 +130,9 @@ export class JornadaCierreService {
         action: 'AUTO_CLOSE',
         diff: {
           workDate,
-          ruleUsed: 'plannedShift.end + FINAL_EXIT_GRACE_MIN',
+          ruleUsed: 'plannedShift.end + Schedule.finalExitGraceMin',
           plannedShiftEnd: plannedShift.end.toISOString(),
-          graceMinutes: FINAL_EXIT_GRACE_MIN,
+          graceMinutes,
           evaluatedAt: now.toISOString(),
         },
       },

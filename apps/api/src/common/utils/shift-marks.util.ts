@@ -9,10 +9,13 @@ export const MARK_SEQUENCE: TimeLogType[] = [
   TimeLogType.CHECK_OUT,
 ];
 
-// Ventanas por defecto (minutos). Fase 1: constantes; en una fase posterior
-// se moveran a columnas configurables en Schedule (por empresa/cargo/persona).
-const FINAL_EXIT_WINDOW_BEFORE_MIN = 30;
-const NIGHT_SHIFT_GRACE_MIN = 240;
+// Ventanas por defecto (minutos), usadas solo cuando el horario resuelto no
+// trae su propia configuracion (ej. turno de rutina rotativa sin Schedule
+// propio, o sin horario asignado). Fase 4: el caso normal (Schedule via
+// UserSchedule/Position) ya trae sus propios valores configurables -- ver
+// MarkResolutionContext.finalExitWindowBeforeMin / nightShiftGraceMin.
+const DEFAULT_FINAL_EXIT_WINDOW_BEFORE_MIN = 30;
+const DEFAULT_NIGHT_SHIFT_GRACE_MIN = 240;
 
 export interface ShiftMarks {
   checkIn?: Date;
@@ -41,6 +44,9 @@ export interface MarkResolutionContext {
   yesterdayPlannedShift?: PlannedShiftWindow;
   allowsLunchSkip: boolean;
   defaultLunchMinutes: number;
+  /** Ventanas configurables del Schedule resuelto (Fase 4). Undefined -> se usan los defaults de este archivo. */
+  finalExitWindowBeforeMin?: number;
+  finalExitGraceMin?: number;
 }
 
 export interface ResolvedMark {
@@ -136,6 +142,7 @@ function decideForOpenShift(
   defaultLunchMinutes: number,
   now: Date,
   workDate: string,
+  finalExitWindowBeforeMin: number,
 ): ResolvedMark | null {
   if (marks.checkOut) return null; // ya completo las marcas de ese turno
 
@@ -149,14 +156,14 @@ function decideForOpenShift(
       effectiveFinalExit = new Date(effectiveFinalExit.getTime() - defaultLunchMinutes * 60_000);
       compensating = true;
     }
-    const windowStart = new Date(effectiveFinalExit.getTime() - FINAL_EXIT_WINDOW_BEFORE_MIN * 60_000);
+    const windowStart = new Date(effectiveFinalExit.getTime() - finalExitWindowBeforeMin * 60_000);
     if (now >= windowStart) {
       return {
         nextLogType: TimeLogType.CHECK_OUT,
         workDate,
         reason: compensating
           ? 'Dentro de la ventana de salida final compensando/adelantando el almuerzo (tiene permiso de saltarlo y no lo marco); se registra como salida definitiva.'
-          : `Dentro de la ventana de salida final (${FINAL_EXIT_WINDOW_BEFORE_MIN} min antes de la hora programada, o despues); se registra como salida definitiva aunque falten marcas de almuerzo.`,
+          : `Dentro de la ventana de salida final (${finalExitWindowBeforeMin} min antes de la hora programada, o despues); se registra como salida definitiva aunque falten marcas de almuerzo.`,
       };
     }
   }
@@ -174,6 +181,8 @@ export async function resolveNextMark(
 ): Promise<ResolvedMark | null> {
   const today = startOfLocalDay(now);
   const todayMarks = await findShiftMarks(prisma, userId, today);
+  const finalExitWindowBeforeMin = context.finalExitWindowBeforeMin ?? DEFAULT_FINAL_EXIT_WINDOW_BEFORE_MIN;
+  const nightShiftGraceMin = context.finalExitGraceMin ?? DEFAULT_NIGHT_SHIFT_GRACE_MIN;
 
   if (!todayMarks.checkIn) {
     // Sin entrada hoy. Solo se considera "continuar" el turno de ayer si ese
@@ -182,7 +191,7 @@ export async function resolveNextMark(
     if (context.yesterdayPlannedShift && crossesMidnight(context.yesterdayPlannedShift)) {
       const yesterday = addDays(today, -1);
       const yesterdayMarks = await findShiftMarks(prisma, userId, yesterday);
-      const graceEnd = new Date(context.yesterdayPlannedShift.end.getTime() + NIGHT_SHIFT_GRACE_MIN * 60_000);
+      const graceEnd = new Date(context.yesterdayPlannedShift.end.getTime() + nightShiftGraceMin * 60_000);
       if (yesterdayMarks.checkIn && now <= graceEnd) {
         const decided = decideForOpenShift(
           yesterdayMarks,
@@ -191,11 +200,12 @@ export async function resolveNextMark(
           context.defaultLunchMinutes,
           now,
           dateKey(yesterday),
+          finalExitWindowBeforeMin,
         );
         if (decided) {
           return {
             ...decided,
-            reason: `Continua el turno nocturno de ayer (horario cruza medianoche, dentro del margen de ${NIGHT_SHIFT_GRACE_MIN} min tras su salida programada). ${decided.reason}`,
+            reason: `Continua el turno nocturno de ayer (horario cruza medianoche, dentro del margen de ${nightShiftGraceMin} min tras su salida programada). ${decided.reason}`,
           };
         }
       }
@@ -203,5 +213,13 @@ export async function resolveNextMark(
     return { nextLogType: TimeLogType.CHECK_IN, workDate: dateKey(today), reason: 'Primera marca del dia calendario de hoy.' };
   }
 
-  return decideForOpenShift(todayMarks, context.todayPlannedShift, context.allowsLunchSkip, context.defaultLunchMinutes, now, dateKey(today));
+  return decideForOpenShift(
+    todayMarks,
+    context.todayPlannedShift,
+    context.allowsLunchSkip,
+    context.defaultLunchMinutes,
+    now,
+    dateKey(today),
+    finalExitWindowBeforeMin,
+  );
 }
