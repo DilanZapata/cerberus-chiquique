@@ -23,4 +23,10 @@ export class KioskController {
   faceClock(@Body() dto: KioskFaceClockDto) {
     return this.kioskService.faceClock(dto);
   }
+
+  /** Solo identifica el rostro, sin registrar ninguna marca -- para el sondeo periodico de la camara mientras busca a alguien. */
+  @Post('face-probe')
+  identifyFace(@Body() dto: KioskFaceClockDto) {
+    return this.kioskService.identifyFace(dto);
+  }
 }

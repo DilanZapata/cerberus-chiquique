@@ -23,6 +23,27 @@ async function handle(res: Response) {
   return res.json();
 }
 
+// El kiosco hace solicitudes automaticas sin que nadie las este mirando
+// (sondeo de camara + el marcaje real): una solicitud colgada NUNCA debe
+// dejar el estado de procesamiento atascado indefinidamente, por eso estas
+// llamadas van con un limite de tiempo explicito.
+const KIOSK_REQUEST_TIMEOUT_MS = 15000;
+
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      throw new ApiError('El servidor no respondio a tiempo. Intenta de nuevo.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Llamada autenticada generica al backend (panel administrativo). */
 async function apiRequest(token: string, path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
@@ -51,29 +72,52 @@ export async function kioskClock(params: {
   pin: string;
   imageBase64?: string;
 }): Promise<KioskClockResult> {
-  const res = await fetch(`${API_URL}/kiosk/clock`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
+  const res = await fetchWithTimeout(
+    `${API_URL}/kiosk/clock`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) },
+    KIOSK_REQUEST_TIMEOUT_MS,
+  );
   return handle(res);
 }
 
 /**
  * Modo Kiosco por reconocimiento facial: misma deteccion de sede por GPS; el
  * celular solo toma la foto y la sube, todo el reconocimiento ocurre en el
- * backend propio (nunca en un servicio de terceros).
+ * backend propio (nunca en un servicio de terceros). Esta es la llamada que
+ * REALMENTE registra la marca (sujeta al guard de 5 minutos del backend).
  */
 export async function kioskFaceClock(params: {
   latitude: number;
   longitude: number;
   imageBase64: string;
 }): Promise<KioskClockResult> {
-  const res = await fetch(`${API_URL}/kiosk/face-clock`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
+  const res = await fetchWithTimeout(
+    `${API_URL}/kiosk/face-clock`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) },
+    KIOSK_REQUEST_TIMEOUT_MS,
+  );
+  return handle(res);
+}
+
+export interface KioskFaceProbeResult {
+  recognized: boolean;
+  fullName?: string;
+  distance?: number;
+}
+
+/**
+ * Solo identifica el rostro de la foto, SIN registrar ninguna marca -- para
+ * el sondeo periodico de la camara del kiosco mientras busca a alguien
+ * frente a ella. Nunca lanza por "no se detecto rostro" (el backend lo
+ * trata como resultado normal, ver KioskService.identifyFace): solo puede
+ * fallar por un problema real de red/servidor.
+ */
+export async function kioskFaceProbe(params: { latitude: number; longitude: number; imageBase64: string }): Promise<KioskFaceProbeResult> {
+  const res = await fetchWithTimeout(
+    `${API_URL}/kiosk/face-probe`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) },
+    KIOSK_REQUEST_TIMEOUT_MS,
+  );
   return handle(res);
 }
 

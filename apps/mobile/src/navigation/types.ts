@@ -1,5 +1,4 @@
 export type RootStackParamList = {
-  SelectMode: undefined;
   Login: undefined;
   Kiosk: undefined;
   EmployeeClock: undefined;

@@ -89,6 +89,35 @@ export class KioskService {
     return this.registerMark(user, workSite.id, dto.latitude, dto.longitude, dto.imageBase64);
   }
 
+  /**
+   * Identifica el rostro de la foto SIN crear ninguna marca -- pensado para
+   * el sondeo periodico ("polling") de la camara del kiosco mientras busca
+   * a alguien frente a ella. Nunca lanza: mientras nadie este frente a la
+   * camara (o el rostro todavia no se detecta bien), `identify()` lanza
+   * `BadRequestException`, y para este endpoint ese es un resultado NORMAL
+   * (recognized: false), no un error -- asi el cliente puede sondear cada
+   * pocos segundos sin tener que distinguir "nadie ahi" de un error real.
+   * Solo cuando el cliente detecte varias identificaciones consecutivas
+   * estables de la MISMA persona debe llamar a `faceClock()` (el que si
+   * registra la marca, con el guard de duplicados intacto).
+   */
+  async identifyFace(dto: KioskFaceClockDto): Promise<{ recognized: boolean; fullName?: string; distance?: number }> {
+    const nearbySites = await this.findNearbyWorkSites(dto.latitude, dto.longitude);
+    if (nearbySites.length === 0) return { recognized: false };
+
+    const companyIds = [...new Set(nearbySites.map((s) => s.companyId))];
+    for (const companyId of companyIds) {
+      try {
+        const match = await this.faceRecognitionService.identify(companyId, dto.imageBase64);
+        if (match) return { recognized: true, fullName: match.fullName, distance: match.distance };
+      } catch {
+        // Sin rostro detectable en este frame, o modelos aun no listos: no
+        // es un error para un sondeo periodico, simplemente sigue buscando.
+      }
+    }
+    return { recognized: false };
+  }
+
   private async registerMark(
     user: User,
     workSiteId: string,

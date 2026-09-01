@@ -3,7 +3,6 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { RootStackParamList } from './types';
 import { useAuth } from '../context/AuthContext';
 import { isAdminRole } from '../services/auth';
-import SelectModeScreen from '../screens/SelectModeScreen';
 import LoginScreen from '../screens/LoginScreen';
 import KioskScreen from '../screens/KioskScreen';
 import EmployeeScreen from '../screens/EmployeeScreen';
@@ -17,9 +16,12 @@ import EmployeeHistoryScreen from '../screens/admin/EmployeeHistoryScreen';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 /**
- * El stack de pantallas cambia segun el estado de sesion: sin sesion se
- * puede usar el kiosco (terminal compartida, sin login personal) o iniciar
- * sesion; con sesion, el rol decide si se entra al panel admin o al marcaje
+ * El stack de pantallas cambia segun el estado de sesion: sin sesion, la app
+ * abre DIRECTO en el kiosco de reconocimiento facial (terminal compartida,
+ * sin login personal) -- es la pantalla inicial, no una opcion entre otras.
+ * Iniciar sesion sigue disponible (boton discreto dentro del propio
+ * KioskScreen) para quien necesite el panel admin o el marcaje personal.
+ * Con sesion, el rol decide si se entra al panel admin o al marcaje
  * personal de empleado. React Navigation reinicia solo al stack activo
  * cuando cambia la lista de pantallas.
  */
@@ -38,9 +40,8 @@ export default function RootNavigator() {
     <Stack.Navigator>
       {!session ? (
         <>
-          <Stack.Screen name="SelectMode" component={SelectModeScreen} options={{ headerShown: false }} />
-          <Stack.Screen name="Login" component={LoginScreen} options={{ title: 'Iniciar sesion' }} />
           <Stack.Screen name="Kiosk" component={KioskScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="Login" component={LoginScreen} options={{ title: 'Iniciar sesion' }} />
         </>
       ) : isAdminRole(session.user.role) ? (
         <>
