@@ -81,6 +81,34 @@ export function reviewOvertime(
   return apiJson(`/novelties/overtime/${id}/review`, { method: 'POST', body: JSON.stringify(body) });
 }
 
+// ---- Jornadas abiertas (cierre automatico + revision) ----
+
+export type JornadaAbiertaEstado = 'SIN_HORARIO' | 'PENDIENTE_CIERRE' | 'VENCIDA_CIERRE_AUTOMATICO' | 'CERRADA_PENDIENTE_REVISION';
+
+export interface JornadaAbierta {
+  kind: 'ABIERTA' | 'CERRADA_PENDIENTE_REVISION';
+  noveltyId?: string;
+  userId: string;
+  employeeCode: string;
+  fullName: string;
+  department: string | null;
+  workSite: string | null;
+  workDate: string;
+  estado: JornadaAbiertaEstado;
+  checkIn?: string;
+  plannedExit?: string | null;
+  autoClosedExit?: string | null;
+  notes?: string | null;
+}
+
+export function getJornadasAbiertas(workDate?: string): Promise<JornadaAbierta[]> {
+  return apiJson(`/time-logs/jornadas-abiertas${workDate ? `?workDate=${workDate}` : ''}`);
+}
+
+export function reviewJornada(noveltyId: string, body: { status: 'APROBADA' | 'RECHAZADA'; notes?: string }) {
+  return apiJson(`/time-logs/jornadas-abiertas/${noveltyId}/review`, { method: 'POST', body: JSON.stringify(body) });
+}
+
 // ---- Incidencias (permisos / incapacidades) ----
 
 export interface PendingIncidence {

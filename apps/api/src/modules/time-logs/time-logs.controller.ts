@@ -2,9 +2,11 @@ import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/
 import { UserRole } from '@prisma/client';
 import { TimeLogsService } from './time-logs.service';
 import { JornadaCierreService } from './jornada-cierre.service';
+import { JornadasAbiertasService } from './jornadas-abiertas.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
 import { ManualTimeLogDto } from './dto/manual-time-log.dto';
 import { CreateMarkDto, UpdateMarkDto } from './dto/single-mark.dto';
+import { ReviewJornadaDto } from './dto/review-jornada.dto';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 
@@ -13,6 +15,7 @@ export class TimeLogsController {
   constructor(
     private readonly timeLogsService: TimeLogsService,
     private readonly jornadaCierreService: JornadaCierreService,
+    private readonly jornadasAbiertasService: JornadasAbiertasService,
   ) {}
 
   /** Dispara el cierre automatico de jornadas abiertas ya mismo, sin esperar el cron (para pruebas/soporte). */
@@ -20,6 +23,24 @@ export class TimeLogsController {
   @Post('close-overdue-shifts')
   closeOverdueShifts() {
     return this.jornadaCierreService.closeOverdueOpenShifts();
+  }
+
+  /** Panel: jornadas abiertas vencidas o cerradas automaticamente que requieren revision de un supervisor. */
+  @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
+  @Get('jornadas-abiertas')
+  listJornadasAbiertas(@Query('workDate') workDate: string | undefined, @CurrentUser() currentUser: AuthenticatedUser) {
+    return this.jornadasAbiertasService.listNeedingAttention(currentUser.companyId, workDate);
+  }
+
+  /** Marca una jornada cerrada automaticamente como revisada. */
+  @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
+  @Post('jornadas-abiertas/:noveltyId/review')
+  reviewJornada(
+    @Param('noveltyId') noveltyId: string,
+    @Body() dto: ReviewJornadaDto,
+    @CurrentUser() currentUser: AuthenticatedUser,
+  ) {
+    return this.jornadasAbiertasService.review(currentUser.companyId, noveltyId, dto, currentUser.id);
   }
 
   /** Modo Empleado: marca su propia entrada/salida validando GPS contra su sede asignada. */

@@ -6,12 +6,14 @@ import { addDays, startOfLocalDay } from '../../common/utils/time.util';
 import { findShiftMarks } from '../../common/utils/shift-marks.util';
 import { NoveltiesService } from '../novelties/novelties.service';
 
-const LOOKBACK_DAYS = 3;
+export const LOOKBACK_DAYS = 3;
 // Margen tras la hora de salida programada antes de considerar una jornada
 // "abierta e incompleta" y candidata a cierre automatico. Fase 4 movera esto
 // a una columna configurable de Schedule (finalExitGraceMin); por ahora es
-// una constante razonable, igual que las de shift-marks.util.ts.
-const FINAL_EXIT_GRACE_MIN = 180;
+// una constante razonable, igual que las de shift-marks.util.ts. Exportada
+// para que jornadas-abiertas.service.ts clasifique el mismo estado sin
+// duplicar el numero.
+export const FINAL_EXIT_GRACE_MIN = 180;
 
 function localDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;

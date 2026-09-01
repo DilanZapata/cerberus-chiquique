@@ -23,6 +23,7 @@ import {
   MapPin,
   Briefcase,
   Pencil,
+  AlertTriangle,
 } from 'lucide-react';
 import { clearSession, getUser } from '@/lib/auth';
 
@@ -46,6 +47,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/positions', label: 'Cargos y Horarios', icon: Briefcase },
       { href: '/attendance-history', label: 'Historial de Marcas', icon: MapPin },
       { href: '/payroll-manual', label: 'Corregir Marcas y Novedades', icon: Pencil },
+      { href: '/jornadas-abiertas', label: 'Jornadas Abiertas', icon: AlertTriangle },
     ],
   },
   {
