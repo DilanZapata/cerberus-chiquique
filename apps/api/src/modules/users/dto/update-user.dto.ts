@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsEmail,
   IsEnum,
@@ -30,9 +31,11 @@ export class UpdateUserDto {
   @IsUUID()
   departmentId?: string;
 
+  /** Si se envia (incluso vacio), reemplaza por completo las sedes asignadas. */
   @IsOptional()
-  @IsUUID()
-  workSiteId?: string;
+  @IsArray()
+  @IsUUID('4', { each: true })
+  workSiteIds?: string[];
 
   @IsOptional()
   @IsUUID()

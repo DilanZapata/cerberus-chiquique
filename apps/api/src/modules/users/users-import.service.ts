@@ -79,7 +79,7 @@ export class UsersImportService {
       { header: 'Correo', key: 'email', width: 30 },
       { header: 'Rol (vacio = Empleado)', key: 'role', width: 22 },
       { header: 'Departamento (vacio = sin asignar)', key: 'department', width: 26 },
-      { header: 'Sede (vacio = sin asignar)', key: 'workSite', width: 26 },
+      { header: 'Sede(s) (separa varias con coma; vacio = sin asignar)', key: 'workSite', width: 32 },
     ];
     sheet.getRow(1).font = { bold: true };
     sheet.getRow(1).alignment = { wrapText: true, vertical: 'middle' };
@@ -104,13 +104,10 @@ export class UsersImportService {
           formulae: [`'Listas (no borrar)'!$B$1:$B$${departments.length}`],
         };
       }
-      if (workSites.length) {
-        sheet.getCell(r, 8).dataValidation = {
-          type: 'list',
-          allowBlank: true,
-          formulae: [`'Listas (no borrar)'!$C$1:$C$${workSites.length}`],
-        };
-      }
+      // La columna de Sede(s) admite varios nombres separados por coma, asi
+      // que no lleva un desplegable de una sola opcion como rol/departamento
+      // -- la hoja "Listas (no borrar)" igual sirve de referencia de nombres
+      // validos.
     }
 
     return workbook;
@@ -187,13 +184,20 @@ export class UsersImportService {
         else departmentId = matched;
       }
 
-      let workSiteId: string | undefined;
+      let workSiteIds: string[] = [];
       if (options.workSiteMode === ImportFieldMode.UNIFORM) {
-        workSiteId = options.workSiteValue;
+        workSiteIds = options.workSiteValues ?? [];
       } else if (workSiteRaw) {
-        const matched = workSiteIdByName.get(normalize(workSiteRaw));
-        if (!matched) errors.push(`sede "${workSiteRaw}" no existe`);
-        else workSiteId = matched;
+        // Varios nombres de sede separados por coma en la misma celda.
+        const names = workSiteRaw
+          .split(',')
+          .map((n) => n.trim())
+          .filter(Boolean);
+        for (const name of names) {
+          const matched = workSiteIdByName.get(normalize(name));
+          if (!matched) errors.push(`sede "${name}" no existe`);
+          else workSiteIds.push(matched);
+        }
       }
 
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('correo invalido');
@@ -213,7 +217,7 @@ export class UsersImportService {
             email,
             role,
             departmentId,
-            workSiteId,
+            workSites: workSiteIds.length ? { create: workSiteIds.map((workSiteId) => ({ workSiteId })) } : undefined,
             hireDate: hireDate!,
           },
         });

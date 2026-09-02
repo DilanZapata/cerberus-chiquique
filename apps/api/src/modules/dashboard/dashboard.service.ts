@@ -23,7 +23,7 @@ export class DashboardService {
     const [users, timeLogs, novelties] = await Promise.all([
       this.prisma.user.findMany({
         where: { isActive: true, role: 'EMPLOYEE' },
-        include: { department: true, workSite: true },
+        include: { department: true, workSites: { include: { workSite: true } } },
         orderBy: { employeeCode: 'asc' },
       }),
       this.prisma.timeLog.findMany({
@@ -59,7 +59,7 @@ export class DashboardService {
           employeeCode: user.employeeCode,
           fullName: user.fullName,
           department: user.department?.name ?? null,
-          workSite: user.workSite?.name ?? null,
+          workSite: user.workSites.map((a) => a.workSite.name).join(', ') || null,
         },
         marks: {
           checkIn: find(TimeLogType.CHECK_IN),

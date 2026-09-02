@@ -82,7 +82,14 @@ export class JornadaCierreService {
 
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { companyId: true, workSiteId: true },
+      select: { companyId: true },
+    });
+    // Una persona puede tener varias sedes asignadas: no hay "la" sede para
+    // grabar en el cierre automatico. Se usa la misma sede que ya quedo en
+    // su CHECK_IN real de ese dia -- la sede donde de verdad entro.
+    const checkInLog = await this.prisma.timeLog.findFirst({
+      where: { userId, logType: TimeLogType.CHECK_IN, loggedAt: marks.checkIn },
+      select: { workSiteId: true },
     });
 
     let createdLogId: string;
@@ -90,7 +97,7 @@ export class JornadaCierreService {
       const created = await this.prisma.timeLog.create({
         data: {
           userId,
-          workSiteId: user.workSiteId,
+          workSiteId: checkInLog?.workSiteId,
           logType: TimeLogType.CHECK_OUT,
           loggedAt: plannedShift.end,
           source: TimeLogSource.AUTO_CLOSE,

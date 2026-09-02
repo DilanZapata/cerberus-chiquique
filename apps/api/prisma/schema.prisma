@@ -183,9 +183,9 @@ model WorkSite {
   gpsRadiusMeters Int      @default(150) @map("gps_radius_meters")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  users    User[]
-  timeLogs TimeLog[]
+  company         Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userAssignments UserWorkSite[]
+  timeLogs        TimeLog[]
 
   @@map("work_sites")
 }
@@ -216,7 +216,6 @@ model User {
   id               String       @id @default(uuid())
   companyId        String       @map("company_id")
   departmentId     String?      @map("department_id")
-  workSiteId       String?      @map("work_site_id")
   positionId       String?      @map("position_id")
   employeeCode     String       @map("employee_code")
   nationalId       String       @map("national_id")
@@ -237,11 +236,11 @@ model User {
 
   company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   department   Department?    @relation(fields: [departmentId], references: [id])
-  workSite     WorkSite?      @relation(fields: [workSiteId], references: [id])
   position     Position?      @relation(fields: [positionId], references: [id])
   supervisor   User?          @relation("Supervision", fields: [supervisorId], references: [id])
   subordinates User[]         @relation("Supervision")
 
+  workSites          UserWorkSite[]
   userSchedules      UserSchedule[]
   shifts             Shift[]
   shiftPatternAssignments UserShiftPatternAssignment[]
@@ -321,6 +320,25 @@ model UserSchedule {
 
   @@index([userId, validFrom, validTo])
   @@map("user_schedules")
+}
+
+// Sedes asociadas a una persona: una persona puede tener varias (ej. rota
+// entre dos sitios de trabajo reales), y el marcaje por GPS de autoservicio
+// (TimeLogsService.mobileClock) valida contra CUALQUIERA de ellas, no solo
+// una. El marcaje en si (TimeLog.workSiteId) sigue siendo una sola sede por
+// marca -- la sede real donde se hizo esa marca puntual.
+model UserWorkSite {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  workSiteId String   @map("work_site_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workSite WorkSite @relation(fields: [workSiteId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workSiteId])
+  @@index([workSiteId])
+  @@map("user_work_sites")
 }
 
 model Shift {

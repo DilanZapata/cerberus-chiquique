@@ -37,7 +37,7 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('EMPLOYEE');
   const [departmentId, setDepartmentId] = useState('');
-  const [workSiteId, setWorkSiteId] = useState('');
+  const [workSiteIds, setWorkSiteIds] = useState<string[]>([]);
   const [hireDate, setHireDate] = useState(new Date().toISOString().slice(0, 10));
   const [baseSalary, setBaseSalary] = useState('');
   const [allowsLunchSkip, setAllowsLunchSkip] = useState(false);
@@ -61,14 +61,14 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
             setEmail(emp.email ?? '');
             setRole(emp.role);
             setDepartmentId(emp.department?.id ?? '');
-            setWorkSiteId(emp.workSite?.id ?? '');
+            setWorkSiteIds(emp.workSites.map((s) => s.id));
             setBaseSalary(emp.baseSalary ?? '');
             setAllowsLunchSkip(emp.allowsLunchSkip);
             setEmployeeCode(emp.employeeCode);
             setNationalId(emp.nationalId);
           }
         }
-        if (sites.length === 1) setWorkSiteId(sites[0].id);
+        if (sites.length === 1 && !isEdit) setWorkSiteIds([sites[0].id]);
       })
       .catch((err) => setError((err as Error).message))
       .finally(() => setLoading(false));
@@ -85,7 +85,7 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
           email: email || undefined,
           role,
           departmentId: departmentId || undefined,
-          workSiteId: workSiteId || undefined,
+          workSiteIds,
           baseSalary: baseSalary ? Number(baseSalary) : undefined,
           allowsLunchSkip,
           password: password || undefined,
@@ -99,7 +99,7 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
           email: email || undefined,
           role,
           departmentId: departmentId || undefined,
-          workSiteId: workSiteId || undefined,
+          workSiteIds: workSiteIds.length ? workSiteIds : undefined,
           hireDate,
           baseSalary: baseSalary ? Number(baseSalary) : undefined,
           allowsLunchSkip,
@@ -153,13 +153,20 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
 
       {workSites.length > 1 && (
         <>
-          <Text style={styles.label}>Sede</Text>
+          <Text style={styles.label}>Sedes (puede tener varias)</Text>
           <View style={styles.chipRow}>
-            {workSites.map((s) => (
-              <TouchableOpacity key={s.id} style={[styles.chip, workSiteId === s.id && styles.chipActive]} onPress={() => setWorkSiteId(s.id)}>
-                <Text style={[styles.chipText, workSiteId === s.id && styles.chipTextActive]}>{s.name}</Text>
-              </TouchableOpacity>
-            ))}
+            {workSites.map((s) => {
+              const active = workSiteIds.includes(s.id);
+              return (
+                <TouchableOpacity
+                  key={s.id}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => setWorkSiteIds((prev) => (active ? prev.filter((id) => id !== s.id) : [...prev, s.id]))}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{s.name}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </>
       )}

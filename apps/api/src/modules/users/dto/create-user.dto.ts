@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsDateString,
   IsEmail,
@@ -38,9 +39,11 @@ export class CreateUserDto {
   @IsUUID()
   departmentId?: string;
 
+  /** Una persona puede tener varias sedes: el marcaje por GPS valida contra cualquiera de ellas. */
   @IsOptional()
-  @IsUUID()
-  workSiteId?: string;
+  @IsArray()
+  @IsUUID('4', { each: true })
+  workSiteIds?: string[];
 
   /** El cargo trae su propio horario asociado (ver Position.scheduleId); scheduleId sigue disponible para asignar un horario individual que anula el del cargo. */
   @IsOptional()

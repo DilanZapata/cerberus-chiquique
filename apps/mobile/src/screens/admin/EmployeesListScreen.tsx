@@ -84,7 +84,7 @@ export default function EmployeesListScreen({ navigation }: Props) {
                 {item.employeeCode} · {ROLE_LABELS[item.role] ?? item.role}
               </Text>
               <Text style={styles.meta}>
-                {item.department?.name ?? 'Sin depto.'} · {item.workSite?.name ?? 'Sin sede'}
+                {item.department?.name ?? 'Sin depto.'} · {item.workSites.map((s) => s.name).join(', ') || 'Sin sede'}
               </Text>
               <View style={styles.badgeRow}>
                 <View style={[styles.badge, faceEnrolled[item.id] ? styles.badgeGood : styles.badgeNeutral]}>

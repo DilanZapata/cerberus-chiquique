@@ -44,7 +44,7 @@ export class JornadasAbiertasService {
 
     const users = await this.prisma.user.findMany({
       where: { companyId, isActive: true, role: 'EMPLOYEE' },
-      include: { department: true, workSite: true },
+      include: { department: true, workSites: { include: { workSite: true } } },
       orderBy: { employeeCode: 'asc' },
     });
 
@@ -82,7 +82,7 @@ export class JornadasAbiertasService {
         employeeCode: user.employeeCode,
         fullName: user.fullName,
         department: user.department?.name ?? null,
-        workSite: user.workSite?.name ?? null,
+        workSite: user.workSites.map((a) => a.workSite.name).join(', ') || null,
         workDate: localDateKey(date),
         checkIn: formatHHmm(marks.checkIn),
         plannedExit: plannedShift ? formatHHmm(plannedShift.end) : null,
@@ -97,7 +97,15 @@ export class JornadasAbiertasService {
         user: { companyId },
       },
       include: {
-        user: { select: { id: true, employeeCode: true, fullName: true, department: { select: { name: true } }, workSite: { select: { name: true } } } },
+        user: {
+          select: {
+            id: true,
+            employeeCode: true,
+            fullName: true,
+            department: { select: { name: true } },
+            workSites: { include: { workSite: { select: { name: true } } } },
+          },
+        },
         sourceTimeLog: true,
       },
       orderBy: { workDate: 'asc' },
@@ -110,7 +118,7 @@ export class JornadasAbiertasService {
       employeeCode: novelty.user.employeeCode,
       fullName: novelty.user.fullName,
       department: novelty.user.department?.name ?? null,
-      workSite: novelty.user.workSite?.name ?? null,
+      workSite: novelty.user.workSites.map((a) => a.workSite.name).join(', ') || null,
       workDate: novelty.workDate.toISOString().slice(0, 10),
       autoClosedExit: novelty.sourceTimeLog ? formatHHmm(novelty.sourceTimeLog.loggedAt) : null,
       notes: novelty.notes,

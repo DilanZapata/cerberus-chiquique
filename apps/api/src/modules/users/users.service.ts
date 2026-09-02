@@ -1,19 +1,26 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+/** Aplana las filas de UserWorkSite a una lista simple de WorkSite, para no exponer el modelo intermedio a los consumidores de la API. */
+function serializeUser<T extends { workSites: { workSite: WorkSite }[] }>(user: T) {
+  return { ...user, workSites: user.workSites.map((a) => a.workSite) };
+}
 
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(companyId: string) {
-    return this.prisma.user.findMany({
+  async list(companyId: string) {
+    const users = await this.prisma.user.findMany({
       where: { companyId },
-      include: { department: true, workSite: true, position: true },
+      include: { department: true, workSites: { include: { workSite: true } }, position: true },
       orderBy: { employeeCode: 'asc' },
     });
+    return users.map(serializeUser);
   }
 
   async getOrThrow(companyId: string, id: string) {
@@ -21,13 +28,13 @@ export class UsersService {
       where: { id, companyId },
       include: {
         department: true,
-        workSite: true,
+        workSites: { include: { workSite: true } },
         position: { include: { schedule: true } },
         userSchedules: { include: { schedule: true } },
       },
     });
     if (!user) throw new NotFoundException(`Empleado ${id} no encontrado`);
-    return user;
+    return serializeUser(user);
   }
 
   async create(companyId: string, dto: CreateUserDto) {
@@ -43,13 +50,15 @@ export class UsersService {
         email: dto.email,
         role: dto.role,
         departmentId: dto.departmentId,
-        workSiteId: dto.workSiteId,
         positionId: dto.positionId,
         hireDate: new Date(`${dto.hireDate}T00:00:00`),
         baseSalary: dto.baseSalary ?? 0,
         allowsLunchSkip: dto.allowsLunchSkip ?? false,
         passwordHash,
         pinHash,
+        workSites: dto.workSiteIds?.length
+          ? { create: dto.workSiteIds.map((workSiteId) => ({ workSiteId })) }
+          : undefined,
       },
     });
 
@@ -67,6 +76,17 @@ export class UsersService {
     const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : undefined;
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : undefined;
 
+    // Reemplazo completo de las sedes asignadas (mismo patron "borrar todo y
+    // recrear" que ya usa upsertManualDay para marcas): mas simple y menos
+    // propenso a errores que hacer un diff fila por fila, y esta relacion no
+    // tiene historial que preservar.
+    if (dto.workSiteIds) {
+      await this.prisma.userWorkSite.deleteMany({ where: { userId: id } });
+      if (dto.workSiteIds.length) {
+        await this.prisma.userWorkSite.createMany({ data: dto.workSiteIds.map((workSiteId) => ({ userId: id, workSiteId })) });
+      }
+    }
+
     return this.prisma.user.update({
       where: { id },
       data: {
@@ -74,7 +94,6 @@ export class UsersService {
         email: dto.email,
         role: dto.role,
         departmentId: dto.departmentId,
-        workSiteId: dto.workSiteId,
         positionId: dto.positionId,
         baseSalary: dto.baseSalary,
         allowsLunchSkip: dto.allowsLunchSkip,

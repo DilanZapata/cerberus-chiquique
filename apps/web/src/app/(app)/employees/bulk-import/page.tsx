@@ -81,7 +81,7 @@ export default function BulkImportEmployeesPage() {
   const [departmentMode, setDepartmentMode] = useState<ImportFieldMode>('PER_ROW');
   const [departmentValue, setDepartmentValue] = useState('');
   const [workSiteMode, setWorkSiteMode] = useState<ImportFieldMode>('PER_ROW');
-  const [workSiteValue, setWorkSiteValue] = useState('');
+  const [workSiteValues, setWorkSiteValues] = useState<string[]>([]);
 
   const [file, setFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
@@ -129,7 +129,7 @@ export default function BulkImportEmployeesPage() {
         departmentMode,
         departmentValue: departmentMode === 'UNIFORM' ? departmentValue || undefined : undefined,
         workSiteMode,
-        workSiteValue: workSiteMode === 'UNIFORM' ? workSiteValue || undefined : undefined,
+        workSiteValues: workSiteMode === 'UNIFORM' ? workSiteValues : undefined,
       };
       const res = await bulkImportEmployees(file, options);
       setResult(res);
@@ -208,19 +208,25 @@ export default function BulkImportEmployeesPage() {
         </ModeToggle>
 
         <ModeToggle
-          label="Sede"
-          hint="Si dejas 'Cada uno en el Excel' vacío en una fila, esa fila queda sin asignar."
+          label="Sede(s)"
+          hint="Una persona puede tener varias sedes. En 'Cada uno en el Excel', separa varios nombres con coma en la misma celda; vacío = sin asignar."
           mode={workSiteMode}
           onModeChange={setWorkSiteMode}
         >
-          <select className={inputClass} value={workSiteValue} onChange={(e) => setWorkSiteValue(e.target.value)}>
-            <option value="">Sin asignar</option>
+          <div className="space-y-1.5 rounded-lg border border-line-axis p-2.5">
             {workSites.map((w) => (
-              <option key={w.id} value={w.id}>
+              <label key={w.id} className="flex items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={workSiteValues.includes(w.id)}
+                  onChange={(e) =>
+                    setWorkSiteValues((prev) => (e.target.checked ? [...prev, w.id] : prev.filter((id) => id !== w.id)))
+                  }
+                />
                 {w.name}
-              </option>
+              </label>
             ))}
-          </select>
+          </div>
         </ModeToggle>
       </Card>
 

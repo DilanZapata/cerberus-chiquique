@@ -588,7 +588,7 @@ export interface Employee {
   allowsLunchSkip: boolean;
   baseSalary: string;
   department: Department | null;
-  workSite: WorkSite | null;
+  workSites: WorkSite[];
   position: Position | null;
 }
 
@@ -603,7 +603,7 @@ export function createEmployee(body: {
   email?: string;
   role?: string;
   departmentId?: string;
-  workSiteId?: string;
+  workSiteIds?: string[];
   positionId?: string;
   scheduleId?: string;
   hireDate: string;
@@ -622,7 +622,7 @@ export function updateEmployee(
     email: string;
     role: string;
     departmentId: string;
-    workSiteId: string;
+    workSiteIds: string[];
     positionId: string;
     baseSalary: number;
     allowsLunchSkip: boolean;
@@ -648,7 +648,7 @@ export interface BulkImportOptions {
   departmentMode: ImportFieldMode;
   departmentValue?: string;
   workSiteMode: ImportFieldMode;
-  workSiteValue?: string;
+  workSiteValues?: string[];
 }
 
 export interface BulkImportRowResult {
@@ -677,7 +677,7 @@ export async function bulkImportEmployees(file: File, options: BulkImportOptions
   formData.append('departmentMode', options.departmentMode);
   if (options.departmentValue) formData.append('departmentValue', options.departmentValue);
   formData.append('workSiteMode', options.workSiteMode);
-  if (options.workSiteValue) formData.append('workSiteValue', options.workSiteValue);
+  if (options.workSiteValues?.length) formData.append('workSiteValues', JSON.stringify(options.workSiteValues));
 
   const res = await apiFetch('/users/import', { method: 'POST', body: formData });
   if (!res.ok) {

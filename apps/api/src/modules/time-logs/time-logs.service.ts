@@ -95,26 +95,42 @@ export class TimeLogsService {
   ) {}
 
   async mobileClock(userId: string, dto: MobileClockDto) {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, include: { workSite: true } });
-    if (!user.workSite) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { workSites: { include: { workSite: true } } },
+    });
+    if (user.workSites.length === 0) {
       throw new BadRequestException('No tienes una sede asignada para validar tu ubicacion.');
     }
-    if (user.workSite.latitude === null || user.workSite.longitude === null) {
-      throw new BadRequestException('La sede asignada no tiene coordenadas configuradas.');
+    const sitesWithCoords = user.workSites
+      .map((assignment) => assignment.workSite)
+      .filter((site) => site.latitude !== null && site.longitude !== null);
+    if (sitesWithCoords.length === 0) {
+      throw new BadRequestException('Ninguna de tus sedes asignadas tiene coordenadas configuradas.');
     }
 
-    const distanceMeters = haversineDistanceMeters(
-      dto.latitude,
-      dto.longitude,
-      user.workSite.latitude.toNumber(),
-      user.workSite.longitude.toNumber(),
-    );
-    const gpsValid = distanceMeters <= user.workSite.gpsRadiusMeters;
-    if (!gpsValid) {
+    // Valido si cae dentro del radio de CUALQUIERA de las sedes asignadas
+    // (una persona puede tener varias). Se usa la mas cercana entre las que
+    // cumplen para grabar en el TimeLog cual fue la sede real del marcaje;
+    // si ninguna cumple, se reporta la distancia a la mas cercana en general
+    // para que el mensaje siga siendo accionable.
+    const distances = sitesWithCoords
+      .map((site) => ({
+        site,
+        distanceMeters: haversineDistanceMeters(dto.latitude, dto.longitude, site.latitude!.toNumber(), site.longitude!.toNumber()),
+      }))
+      .sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+    const matched = distances.find((d) => d.distanceMeters <= d.site.gpsRadiusMeters);
+    if (!matched) {
+      const nearest = distances[0];
       throw new BadRequestException(
-        `Estas a ${Math.round(distanceMeters)}m de "${user.workSite.name}" (radio permitido: ${user.workSite.gpsRadiusMeters}m).`,
+        `Estas a ${Math.round(nearest.distanceMeters)}m de tu sede mas cercana ("${nearest.site.name}", radio permitido: ${nearest.site.gpsRadiusMeters}m).`,
       );
     }
+    const workSite = matched.site;
+    const distanceMeters = matched.distanceMeters;
+    const gpsValid = true;
 
     const now = new Date();
     // La interpretacion de la marca se basa en el horario REAL asignado al
@@ -147,7 +163,7 @@ export class TimeLogsService {
         await tx.timeLog.create({
           data: {
             userId,
-            workSiteId: user.workSiteId,
+            workSiteId: workSite.id,
             logType: resolved.nextLogType,
             loggedAt: now,
             source: TimeLogSource.MOBILE_GPS,
@@ -226,7 +242,9 @@ export class TimeLogsService {
       this.prisma.timeLog.deleteMany({ where: { userId: dto.userId, loggedAt: { gte: deleteRangeStart, lt: deleteRangeEnd } } }),
       ...marks.map((mark) =>
         this.prisma.timeLog.create({
-          data: { userId: dto.userId, workSiteId: user.workSiteId, logType: mark.logType, loggedAt: mark.loggedAt, source: TimeLogSource.MANUAL },
+          // Sin GPS real detras de una carga manual, y con varias sedes
+          // posibles asignadas, no hay una sola "su sede" honesta que grabar.
+          data: { userId: dto.userId, logType: mark.logType, loggedAt: mark.loggedAt, source: TimeLogSource.MANUAL },
         }),
       ),
     ]);
@@ -406,7 +424,6 @@ export class TimeLogsService {
       await this.prisma.timeLog.create({
         data: {
           userId: dto.userId,
-          workSiteId: user.workSiteId,
           logType: dto.logType,
           loggedAt: localDateTime(dto.workDate, dto.time),
           source: TimeLogSource.MANUAL,

@@ -296,20 +296,22 @@ function WorkSiteRow({ site, onChanged }: { site: WorkSite; onChanged: () => voi
  * sentido preguntar cuando solo hay una respuesta posible). Con 2+ sedes,
  * la seleccion pasa a ser obligatoria porque ahi si importa distinguir.
  */
+/** Una persona puede tener varias sedes: el marcaje por GPS valida contra cualquiera de las que tenga marcadas aqui. */
 function WorkSiteField({
   workSites,
   value,
   onChange,
 }: {
   workSites: WorkSite[];
-  value: string;
-  onChange: (id: string) => void;
+  value: string[];
+  onChange: (ids: string[]) => void;
 }) {
   useEffect(() => {
-    if (workSites.length === 1 && value !== workSites[0].id) {
-      onChange(workSites[0].id);
+    if (workSites.length === 1 && value.length === 0) {
+      onChange([workSites[0].id]);
     }
-  }, [workSites, value, onChange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workSites]);
 
   if (workSites.length === 0) return null;
 
@@ -322,19 +324,21 @@ function WorkSiteField({
     );
   }
 
+  function toggle(id: string) {
+    onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
+  }
+
   return (
     <div>
-      <label className={labelClass}>Sede</label>
-      <select required value={value} onChange={(e) => onChange(e.target.value)} className={`mt-1 w-full ${inputClass}`}>
-        <option value="" disabled>
-          Selecciona una sede...
-        </option>
+      <label className={labelClass}>Sedes</label>
+      <div className="mt-1 space-y-1.5 rounded-lg border border-line-axis p-2.5">
         {workSites.map((s) => (
-          <option key={s.id} value={s.id}>
+          <label key={s.id} className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={value.includes(s.id)} onChange={() => toggle(s.id)} />
             {s.name}
-          </option>
+          </label>
         ))}
-      </select>
+      </div>
     </div>
   );
 }
@@ -360,7 +364,7 @@ function CreateEmployeeForm({
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('EMPLOYEE');
   const [departmentId, setDepartmentId] = useState('');
-  const [workSiteId, setWorkSiteId] = useState('');
+  const [workSiteIds, setWorkSiteIds] = useState<string[]>([]);
   const [positionId, setPositionId] = useState('');
   const [scheduleId, setScheduleId] = useState('');
   const [hireDate, setHireDate] = useState('');
@@ -383,7 +387,7 @@ function CreateEmployeeForm({
         email: email || undefined,
         role,
         departmentId: departmentId || undefined,
-        workSiteId: workSiteId || undefined,
+        workSiteIds: workSiteIds.length ? workSiteIds : undefined,
         positionId: positionId || undefined,
         scheduleId: scheduleId || undefined,
         hireDate,
@@ -441,7 +445,7 @@ function CreateEmployeeForm({
             ))}
           </select>
         </div>
-        <WorkSiteField workSites={workSites} value={workSiteId} onChange={setWorkSiteId} />
+        <WorkSiteField workSites={workSites} value={workSiteIds} onChange={setWorkSiteIds} />
         <div>
           <label className={labelClass}>Cargo (define su horario de entrada/salida)</label>
           <select value={positionId} onChange={(e) => setPositionId(e.target.value)} className={`mt-1 w-full ${inputClass}`}>
@@ -522,7 +526,7 @@ function EditEmployeeForm({
   const [email, setEmail] = useState(employee.email ?? '');
   const [role, setRole] = useState(employee.role);
   const [departmentId, setDepartmentId] = useState(employee.department?.id ?? '');
-  const [workSiteId, setWorkSiteId] = useState(employee.workSite?.id ?? '');
+  const [workSiteIds, setWorkSiteIds] = useState<string[]>(employee.workSites.map((s) => s.id));
   const [positionId, setPositionId] = useState(employee.position?.id ?? '');
   const [baseSalary, setBaseSalary] = useState(employee.baseSalary ?? '');
   const [allowsLunchSkip, setAllowsLunchSkip] = useState(employee.allowsLunchSkip);
@@ -541,7 +545,7 @@ function EditEmployeeForm({
         email: email || undefined,
         role,
         departmentId: departmentId || undefined,
-        workSiteId: workSiteId || undefined,
+        workSiteIds,
         positionId: positionId || undefined,
         baseSalary: baseSalary !== '' ? Number(baseSalary) : undefined,
         allowsLunchSkip,
@@ -589,7 +593,7 @@ function EditEmployeeForm({
             ))}
           </select>
         </div>
-        <WorkSiteField workSites={workSites} value={workSiteId} onChange={setWorkSiteId} />
+        <WorkSiteField workSites={workSites} value={workSiteIds} onChange={setWorkSiteIds} />
         <div>
           <label className={labelClass}>Cargo (define su horario de entrada/salida)</label>
           <select value={positionId} onChange={(e) => setPositionId(e.target.value)} className={`mt-1 w-full ${inputClass}`}>
@@ -800,7 +804,7 @@ export default function EmployeesPage() {
                   <td className="px-4 py-2 text-ink-secondary">{ROLE_LABELS[emp.role] ?? emp.role}</td>
                   <td className="px-4 py-2 text-ink-secondary">{emp.department?.name ?? '—'}</td>
                   <td className="px-4 py-2 text-ink-secondary">{emp.position?.name ?? '—'}</td>
-                  <td className="px-4 py-2 text-ink-secondary">{emp.workSite?.name ?? '—'}</td>
+                  <td className="px-4 py-2 text-ink-secondary">{emp.workSites.map((s) => s.name).join(', ') || '—'}</td>
                   <td className="px-4 py-2">
                     <Badge tone={emp.isActive ? 'good' : 'neutral'}>{emp.isActive ? 'Activo' : 'Inactivo'}</Badge>
                   </td>

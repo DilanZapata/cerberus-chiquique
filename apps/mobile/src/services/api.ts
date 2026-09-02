@@ -213,7 +213,7 @@ export interface Employee {
   allowsLunchSkip: boolean;
   baseSalary: string;
   department: Department | null;
-  workSite: WorkSite | null;
+  workSites: WorkSite[];
 }
 
 export function getEmployees(token: string): Promise<Employee[]> {
@@ -229,7 +229,7 @@ export function createEmployee(
     email?: string;
     role?: string;
     departmentId?: string;
-    workSiteId?: string;
+    workSiteIds?: string[];
     scheduleId?: string;
     hireDate: string;
     baseSalary?: number;
@@ -249,7 +249,7 @@ export function updateEmployee(
     email: string;
     role: string;
     departmentId: string;
-    workSiteId: string;
+    workSiteIds: string[];
     baseSalary: number;
     allowsLunchSkip: boolean;
     isActive: boolean;
