@@ -788,18 +788,62 @@ export interface KioskFaceClockResult {
   loggedAt: string;
 }
 
-/** El kiosco no se autentica con ningun token: el backend identifica la sede (y la empresa) por la ubicacion GPS actual. */
-export async function kioskFaceClock(latitude: number, longitude: number, imageBase64: string): Promise<KioskFaceClockResult> {
-  const res = await fetch(`${API_URL}/kiosk/face-clock`, {
+/**
+ * Error con el campo extra que el guard de registros duplicados del kiosco
+ * agrega al cuerpo del error (`secondsRemaining`) ademas del `message` de
+ * siempre, para que la UI pueda mostrar un contador sin parsear el texto --
+ * mismo contrato que `ApiError` en el cliente movil.
+ */
+export class KioskApiError extends Error {
+  secondsRemaining?: number;
+}
+
+/** El kiosco no se autentica con ningun token: cada llamada va sin Authorization, directo con fetch(). */
+async function kioskFetch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ latitude, longitude, imageBase64 }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.message ?? `Error ${res.status} al marcar`);
+    const parsed = await res.json().catch(() => null);
+    const err = new KioskApiError(parsed?.message ?? `Error ${res.status} al marcar`);
+    if (typeof parsed?.secondsRemaining === 'number') err.secondsRemaining = parsed.secondsRemaining;
+    throw err;
   }
   return res.json();
+}
+
+/** El kiosco no se autentica con ningun token: el backend identifica la sede (y la empresa) por la ubicacion GPS actual. */
+export function kioskFaceClock(latitude: number, longitude: number, imageBase64: string): Promise<KioskFaceClockResult> {
+  return kioskFetch('/kiosk/face-clock', { latitude, longitude, imageBase64 });
+}
+
+export interface KioskFaceProbeResult {
+  recognized: boolean;
+  fullName?: string;
+  distance?: number;
+}
+
+/**
+ * Solo identifica el rostro de la foto, SIN registrar ninguna marca -- para
+ * el sondeo periodico de la camara mientras busca a alguien frente a ella.
+ * Nunca lanza por "no se detecto rostro" (el backend lo trata como
+ * resultado normal): solo puede fallar por un problema real de red/servidor.
+ */
+export function kioskFaceProbe(latitude: number, longitude: number, imageBase64: string): Promise<KioskFaceProbeResult> {
+  return kioskFetch('/kiosk/face-probe', { latitude, longitude, imageBase64 });
+}
+
+/** Modo de respaldo: identifica al empleado por codigo + PIN en vez de reconocimiento facial. */
+export function kioskClock(params: {
+  latitude: number;
+  longitude: number;
+  employeeCode: string;
+  pin: string;
+  imageBase64?: string;
+}): Promise<KioskFaceClockResult> {
+  return kioskFetch('/kiosk/clock', params);
 }
 
 // ---- Calculo manual de nomina ----
