@@ -1,9 +1,14 @@
 import { IsBoolean, IsEnum, IsInt, IsOptional, Matches, Min } from 'class-validator';
-import { DayOfWeek } from '@prisma/client';
+import { CycleWeek, DayOfWeek } from '@prisma/client';
 
 export class ScheduleDayDto {
   @IsEnum(DayOfWeek)
   dayOfWeek!: DayOfWeek;
+
+  /** Semana del ciclo (A o B). Se omite (o se envia 'A') para horarios WEEKLY de una sola semana. */
+  @IsOptional()
+  @IsEnum(CycleWeek)
+  week?: CycleWeek;
 
   @IsBoolean()
   isWorkingDay!: boolean;

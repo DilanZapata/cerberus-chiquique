@@ -449,7 +449,12 @@ export interface WorkSite {
 
 export type DayOfWeek = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY';
 
+/** WEEKLY: una sola semana que se repite. BIWEEKLY_ROTATING: alterna Semana A / Semana B segun el ancla individual de cada empleado. */
+export type ScheduleType = 'WEEKLY' | 'BIWEEKLY_ROTATING';
+export type CycleWeek = 'A' | 'B';
+
 export interface ScheduleDetail {
+  week: CycleWeek;
   dayOfWeek: DayOfWeek;
   isWorkingDay: boolean;
   startTime: string | null;
@@ -460,6 +465,7 @@ export interface ScheduleDetail {
 export interface ScheduleSummary {
   id: string;
   name: string;
+  scheduleType: ScheduleType;
   weeklyHoursTarget?: string;
   defaultLunchMinutes?: number;
   lunchWindowStart?: string;
@@ -471,6 +477,7 @@ export interface ScheduleSummary {
 }
 
 export interface ScheduleDayInput {
+  week?: CycleWeek;
   dayOfWeek: DayOfWeek;
   isWorkingDay: boolean;
   startTime?: string;
@@ -534,6 +541,7 @@ export function getSchedules(): Promise<ScheduleSummary[]> {
 
 export function createSchedule(body: {
   name: string;
+  scheduleType?: ScheduleType;
   weeklyHoursTarget?: number;
   defaultLunchMinutes?: number;
   lunchWindowStart?: string;
@@ -550,6 +558,7 @@ export function updateSchedule(
   id: string,
   body: Partial<{
     name: string;
+    scheduleType: ScheduleType;
     weeklyHoursTarget: number;
     defaultLunchMinutes: number;
     lunchWindowStart: string;
@@ -561,6 +570,17 @@ export function updateSchedule(
   }>,
 ): Promise<ScheduleSummary> {
   return apiJson(`/companies/me/schedules/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export interface CycleWeekPreview {
+  weekStart: string;
+  weekEnd: string;
+  week: CycleWeek;
+}
+
+/** Vista previa pura de como alterna un ciclo A/B (sin guardar nada), para mostrar en el formulario antes de confirmar. */
+export function previewCycleWeeks(anchorDate: string, startWeek: CycleWeek, weeks = 4): Promise<CycleWeekPreview[]> {
+  return apiJson(`/companies/me/schedules/cycle-preview?anchorDate=${anchorDate}&startWeek=${startWeek}&weeks=${weeks}`);
 }
 
 export function getPositions(): Promise<Position[]> {
@@ -577,6 +597,16 @@ export function updatePosition(id: string, body: Partial<{ name: string; schedul
 
 // ---- Empleados ----
 
+export interface UserSchedule {
+  id: string;
+  scheduleId: string;
+  schedule: ScheduleSummary;
+  validFrom: string;
+  validTo: string | null;
+  cycleAnchorDate: string | null;
+  cycleStartWeek: CycleWeek | null;
+}
+
 export interface Employee {
   id: string;
   employeeCode: string;
@@ -590,6 +620,8 @@ export interface Employee {
   department: Department | null;
   workSites: WorkSite[];
   position: Position | null;
+  /** Historial de horarios individuales asignados directamente (no via cargo), mas reciente primero. userSchedules[0] es el vigente hoy si existe. */
+  userSchedules: UserSchedule[];
 }
 
 export function getEmployees(): Promise<Employee[]> {
@@ -606,6 +638,8 @@ export function createEmployee(body: {
   workSiteIds?: string[];
   positionId?: string;
   scheduleId?: string;
+  cycleAnchorDate?: string;
+  cycleStartWeek?: CycleWeek;
   hireDate: string;
   baseSalary?: number;
   allowsLunchSkip?: boolean;
@@ -636,6 +670,32 @@ export function updateEmployee(
 
 export function deactivateEmployee(id: string) {
   return apiJson(`/users/${id}/deactivate`, { method: 'POST' });
+}
+
+/** Reasigna (o quita, con scheduleId: null) el horario individual de un empleado, versionado sin corromper el historial. */
+export function updateUserSchedule(
+  id: string,
+  body: { scheduleId: string | null; effectiveFrom?: string; cycleAnchorDate?: string; cycleStartWeek?: CycleWeek },
+): Promise<Employee> {
+  return apiJson(`/users/${id}/schedule`, { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export interface ScheduleDayPreview {
+  date: string;
+  info: {
+    hasSchedule: boolean;
+    source: 'SHIFT' | 'SCHEDULE' | 'NONE';
+    scheduleName: string | null;
+    scheduleType: ScheduleType | null;
+    activeWeek: CycleWeek | null;
+    isScheduledRestDay: boolean;
+    plannedShift: { start: string; end: string } | null;
+  };
+}
+
+/** Vista previa del horario resuelto (incluida la semana A/B activa) para un rango de fechas. */
+export function getUserSchedulePreview(id: string, from: string, to: string): Promise<ScheduleDayPreview[]> {
+  return apiJson(`/users/${id}/schedule?from=${from}&to=${to}`);
 }
 
 // ---- Carga masiva de empleados (Excel) ----

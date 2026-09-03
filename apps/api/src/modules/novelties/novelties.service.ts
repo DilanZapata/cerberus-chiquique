@@ -13,14 +13,17 @@ import {
   PayrollConfigParams,
 } from '@cerberus/shared-types';
 import {
+  CycleWeek,
   DayOfWeek,
   NoveltyCode as PrismaNoveltyCode,
   NoveltyOrigin as PrismaNoveltyOrigin,
   NoveltyStatus as PrismaNoveltyStatus,
+  ScheduleType,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays, combineDateAndTime, startOfLocalDay, timeToHHmm } from '../../common/utils/time.util';
 import { findShiftMarks } from '../../common/utils/shift-marks.util';
+import { resolveActiveCycleWeek } from '../../common/utils/rotating-schedule.util';
 import { PayrollConfigService } from '../payroll-config/payroll-config.service';
 
 // @cerberus/shared-types define sus propios enums (consumidos tambien por web/mobile,
@@ -62,6 +65,36 @@ export interface ShiftResolution {
   finalExitWindowBeforeMin?: number;
   finalExitGraceMin?: number;
 }
+
+/**
+ * Resultado de `getScheduleInfoForDate` -- la funcion central que resuelve
+ * "que horario le corresponde a este empleado en esta fecha", pensada para
+ * consumo de UI (vista previa del ciclo al configurar un horario rotativo) y
+ * depuracion, no para el motor de calculo (que sigue usando `getPlannedShift`/
+ * `getLunchPolicy` directamente).
+ */
+export interface ScheduleInfoForDate {
+  hasSchedule: boolean;
+  source: 'SHIFT' | 'SCHEDULE' | 'NONE';
+  scheduleName: string | null;
+  scheduleType: ScheduleType | null;
+  /** Solo definido cuando scheduleType es BIWEEKLY_ROTATING. */
+  activeWeek: CycleWeek | null;
+  isScheduledRestDay: boolean;
+  plannedShift: PlannedShiftWindow | null;
+}
+
+type ScheduleWithDetails = {
+  name: string;
+  scheduleType: ScheduleType;
+  details: { week: CycleWeek; dayOfWeek: DayOfWeek; isWorkingDay: boolean; startTime: Date | null; endTime: Date | null }[];
+  finalExitWindowBeforeMin: number;
+  finalExitGraceMin: number;
+  defaultLunchMinutes: number;
+  lunchWindowStart: Date;
+  lunchWindowEnd: Date;
+  lunchToleranceMinutes: number;
+};
 
 @Injectable()
 export class NoveltiesService {
@@ -263,28 +296,15 @@ export class NoveltiesService {
     };
   }
 
-  /** Mismo orden de resolucion que `getPlannedShift`: horario individual (UserSchedule) antes que el del cargo. */
+  /**
+   * La ventana/tolerancia de almuerzo vive a nivel de cabecera del Schedule
+   * (no varia entre semana A y B de un horario rotativo -- el ScheduleDetail
+   * por dia trae su propio `lunchMinutes` en el schema, pero ese campo no lo
+   * consume ningun modulo, ni antes ni despues de esta funcionalidad).
+   */
   private async getLunchPolicy(userId: string, date: Date, allowsLunchSkip: boolean): Promise<LunchPolicy> {
-    const userSchedule = await this.prisma.userSchedule.findFirst({
-      where: {
-        userId,
-        validFrom: { lte: date },
-        OR: [{ validTo: null }, { validTo: { gte: date } }],
-      },
-      orderBy: { validFrom: 'desc' },
-      include: { schedule: true },
-    });
-    if (userSchedule) {
-      return this.toLunchPolicy(userSchedule.schedule, allowsLunchSkip);
-    }
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { position: { include: { schedule: true } } },
-    });
-    if (user?.position?.schedule) {
-      return this.toLunchPolicy(user.position.schedule, allowsLunchSkip);
-    }
+    const resolved = await this.resolveAssignedSchedule(userId, date);
+    if (resolved) return this.toLunchPolicy(resolved.schedule, allowsLunchSkip);
 
     // Sin horario asignado (ni individual ni por cargo): valores por defecto conservadores.
     return {
@@ -297,28 +317,89 @@ export class NoveltiesService {
   }
 
   /**
+   * Punto UNICO de resolucion de "que Schedule (y que semana del ciclo, si es
+   * rotativo) le corresponde a este empleado en esta fecha", compartido por
+   * `getPlannedShift` y `getLunchPolicy` (antes hacian esta misma busqueda
+   * UserSchedule->Position por separado). Orden de precedencia:
+   *  1. Horario asignado directamente al empleado (UserSchedule) - anula el del cargo.
+   *  2. Horario del cargo asignado al empleado (Position.schedule) - el caso comun.
+   * No incluye el paso previo de `Shift` materializado (rutinas rotativas
+   * tipo ShiftPattern): ese siempre gana antes de llegar aqui, ver
+   * `getPlannedShift`.
+   */
+  private async resolveAssignedSchedule(
+    userId: string,
+    date: Date,
+  ): Promise<{ schedule: ScheduleWithDetails; activeWeek: CycleWeek } | null> {
+    const userSchedule = await this.prisma.userSchedule.findFirst({
+      where: {
+        userId,
+        validFrom: { lte: date },
+        OR: [{ validTo: null }, { validTo: { gte: date } }],
+      },
+      orderBy: { validFrom: 'desc' },
+      include: { schedule: { include: { details: true } } },
+    });
+    if (userSchedule) {
+      return {
+        schedule: userSchedule.schedule,
+        activeWeek: this.resolveWeekFor(
+          userSchedule.schedule.scheduleType,
+          userSchedule.cycleAnchorDate,
+          userSchedule.cycleStartWeek,
+          date,
+        ),
+      };
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { position: { include: { schedule: { include: { details: true } } } } },
+    });
+    if (!user?.position?.schedule) return null;
+
+    // Un Schedule BIWEEKLY_ROTATING nunca puede asignarse a un Position
+    // (validado en CompaniesService.createPosition/updatePosition/updateSchedule,
+    // el ancla del ciclo es individual y Position es compartido) -- por eso
+    // aqui siempre es WEEKLY, semana A implicita.
+    return { schedule: user.position.schedule, activeWeek: CycleWeek.A };
+  }
+
+  /**
+   * Calcula la semana activa (A o B) para un horario rotativo, con un default
+   * explicito a A en un solo lugar -- para que ningun llamador futuro tenga
+   * que recordar el `?? 'A'` de un horario WEEKLY por su cuenta.
+   */
+  private resolveWeekFor(
+    scheduleType: ScheduleType,
+    cycleAnchorDate: Date | null,
+    cycleStartWeek: CycleWeek | null,
+    date: Date,
+  ): CycleWeek {
+    if (scheduleType !== ScheduleType.BIWEEKLY_ROTATING) return CycleWeek.A;
+    // Ancla incompleta (no deberia ocurrir, se valida al asignar el horario):
+    // degradar a semana A en vez de romper la resolucion del turno del dia.
+    if (!cycleAnchorDate || !cycleStartWeek) return CycleWeek.A;
+    return resolveActiveCycleWeek(cycleAnchorDate, cycleStartWeek, date);
+  }
+
+  /**
    * Resuelve el horario planeado (crudo, sin ajustar por almuerzo) a partir
-   * de un Schedule ya cargado con sus ScheduleDetail. El ajuste por omision
-   * de almuerzo depende de las marcas de CADA dia (si ese dia realmente paso
-   * derecho o no), no solo del permiso del empleado, asi que se resuelve mas
-   * adelante en el motor de calculo (`calculateDailyNovelties`), que si
-   * conoce las marcas del dia.
+   * de un Schedule ya cargado con sus ScheduleDetail, para la semana del
+   * ciclo que le corresponde a `date` (`activeWeek`, siempre A para un
+   * Schedule WEEKLY). El ajuste por omision de almuerzo depende de las
+   * marcas de CADA dia (si ese dia realmente paso derecho o no), no solo del
+   * permiso del empleado, asi que se resuelve mas adelante en el motor de
+   * calculo (`calculateDailyNovelties`), que si conoce las marcas del dia.
    *
    * Distingue "el dia no existe en el horario" (anomalia, se trata como sin
    * horario) de "el dia SI existe pero es de descanso" (isScheduledRestDay),
    * que es la que le importa a `calculateDailyNovelties` para saber que ese
    * dia no tiene cupo ordinario propio.
    */
-  private resolveShiftFromSchedule(
-    schedule: {
-      details: { dayOfWeek: DayOfWeek; isWorkingDay: boolean; startTime: Date | null; endTime: Date | null }[];
-      finalExitWindowBeforeMin: number;
-      finalExitGraceMin: number;
-    },
-    date: Date,
-  ): ShiftResolution {
+  private resolveShiftFromSchedule(schedule: ScheduleWithDetails, activeWeek: CycleWeek, date: Date): ShiftResolution {
     const dayOfWeek = DAY_OF_WEEK_BY_INDEX[date.getDay()];
-    const detail = schedule.details.find((d) => d.dayOfWeek === dayOfWeek);
+    const detail = schedule.details.find((d) => d.week === activeWeek && d.dayOfWeek === dayOfWeek);
     if (!detail) return { plannedShift: undefined, isScheduledRestDay: false };
     if (!detail.isWorkingDay || !detail.startTime || !detail.endTime) {
       return { plannedShift: undefined, isScheduledRestDay: true };
@@ -344,7 +425,13 @@ export class NoveltiesService {
 
   /**
    * Orden de resolucion del horario planeado de un dia:
-   *  1. Turno generado por rutinas rotativas (Shift), si existe.
+   *  1. Turno generado por rutinas rotativas (Shift), si existe. NOTA: si un
+   *     empleado tuviera a la vez una UserShiftPatternAssignment activa y un
+   *     UserSchedule rotativo activo (configuracion inconsistente, no deberia
+   *     ocurrir en uso normal), el Shift materializado gana silenciosamente
+   *     -- mismo comportamiento que ya existia para horarios WEEKLY antes de
+   *     esta funcionalidad, documentado aqui porque ahora aplica tambien a
+   *     horarios rotativos.
    *  2. Horario asignado directamente al empleado (UserSchedule) - anula el del cargo.
    *  3. Horario del cargo asignado al empleado (Position.schedule) - el caso comun.
    */
@@ -358,28 +445,61 @@ export class NoveltiesService {
       return { plannedShift: { start: shift.plannedStart, end: shift.plannedEnd }, isScheduledRestDay: false };
     }
 
-    const userSchedule = await this.prisma.userSchedule.findFirst({
-      where: {
-        userId,
-        validFrom: { lte: date },
-        OR: [{ validTo: null }, { validTo: { gte: date } }],
-      },
-      orderBy: { validFrom: 'desc' },
-      include: {
-        schedule: { include: { details: true } },
-      },
+    const resolved = await this.resolveAssignedSchedule(userId, date);
+    if (!resolved) return { plannedShift: undefined, isScheduledRestDay: false };
+
+    return this.resolveShiftFromSchedule(resolved.schedule, resolved.activeWeek, date);
+  }
+
+  /**
+   * `obtenerHorarioEmpleadoParaFecha`: la funcion central, para consumo
+   * externo (UI/depuracion), que devuelve toda la informacion resuelta del
+   * horario de un empleado en una fecha dada -- incluida la semana del ciclo
+   * (A/B) cuando aplica. El motor de calculo sigue usando `getPlannedShift`/
+   * `getLunchPolicy` directamente (mismos datos, forma mas liviana); esta
+   * funcion existe para que otros consumidores (ej. una vista previa del
+   * ciclo al configurar un horario rotativo) nunca tengan que reimplementar
+   * la logica de resolucion por su cuenta.
+   */
+  async getScheduleInfoForDate(userId: string, date: Date): Promise<ScheduleInfoForDate> {
+    const shift = await this.prisma.shift.findUnique({
+      where: { userId_workDate: { userId, workDate: date } },
     });
-    if (userSchedule) {
-      return this.resolveShiftFromSchedule(userSchedule.schedule, date);
+    if (shift) {
+      return {
+        hasSchedule: true,
+        source: 'SHIFT',
+        scheduleName: null,
+        scheduleType: null,
+        activeWeek: null,
+        isScheduledRestDay: shift.isRestDay,
+        plannedShift: shift.isRestDay ? null : { start: shift.plannedStart, end: shift.plannedEnd },
+      };
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { position: { include: { schedule: { include: { details: true } } } } },
-    });
-    if (!user?.position?.schedule) return { plannedShift: undefined, isScheduledRestDay: false };
+    const resolved = await this.resolveAssignedSchedule(userId, date);
+    if (!resolved) {
+      return {
+        hasSchedule: false,
+        source: 'NONE',
+        scheduleName: null,
+        scheduleType: null,
+        activeWeek: null,
+        isScheduledRestDay: false,
+        plannedShift: null,
+      };
+    }
 
-    return this.resolveShiftFromSchedule(user.position.schedule, date);
+    const resolution = this.resolveShiftFromSchedule(resolved.schedule, resolved.activeWeek, date);
+    return {
+      hasSchedule: true,
+      source: 'SCHEDULE',
+      scheduleName: resolved.schedule.name,
+      scheduleType: resolved.schedule.scheduleType,
+      activeWeek: resolved.schedule.scheduleType === ScheduleType.BIWEEKLY_ROTATING ? resolved.activeWeek : null,
+      isScheduledRestDay: resolution.isScheduledRestDay,
+      plannedShift: resolution.plannedShift ?? null,
+    };
   }
 
   /**

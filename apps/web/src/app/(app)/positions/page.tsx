@@ -13,7 +13,9 @@ import {
   getSchedules,
   Position,
   ScheduleDayInput,
+  ScheduleDetail,
   ScheduleSummary,
+  ScheduleType,
   updatePosition,
   updateSchedule,
 } from '@/lib/api';
@@ -32,8 +34,9 @@ const DAYS: { value: DayOfWeek; label: string }[] = [
   { value: 'SUNDAY', label: 'Domingo' },
 ];
 
-function defaultDays(): ScheduleDayInput[] {
+function defaultDays(week: 'A' | 'B' = 'A'): ScheduleDayInput[] {
   return DAYS.map(({ value }) => ({
+    week,
     dayOfWeek: value,
     isWorkingDay: value !== 'SUNDAY',
     startTime: value === 'SATURDAY' ? '08:00' : '08:00',
@@ -41,11 +44,10 @@ function defaultDays(): ScheduleDayInput[] {
   }));
 }
 
-function summarizeSchedule(schedule: ScheduleSummary): string {
-  if (!schedule.details || schedule.details.length === 0) return 'Sin dias configurados';
-  const working = schedule.details.filter((d) => d.isWorkingDay);
+/** Agrupa dias consecutivos con el mismo horario para un resumen corto (ej. "L-V 08:00-16:00, Sab 08:00-12:00"). */
+function summarizeDays(details: ScheduleDetail[]): string {
+  const working = details.filter((d) => d.isWorkingDay);
   if (working.length === 0) return 'Sin dias laborales';
-  // Agrupa dias consecutivos con el mismo horario para un resumen corto (ej. "L-V 08:00-16:00, Sab 08:00-12:00").
   const order: DayOfWeek[] = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
   const short: Record<DayOfWeek, string> = {
     MONDAY: 'L',
@@ -58,7 +60,7 @@ function summarizeSchedule(schedule: ScheduleSummary): string {
   };
   const parts: string[] = [];
   let i = 0;
-  const sorted = order.map((day) => schedule.details!.find((d) => d.dayOfWeek === day)).filter((d): d is NonNullable<typeof d> => !!d);
+  const sorted = order.map((day) => details.find((d) => d.dayOfWeek === day)).filter((d): d is NonNullable<typeof d> => !!d);
   while (i < sorted.length) {
     const day = sorted[i];
     if (!day.isWorkingDay) {
@@ -74,6 +76,57 @@ function summarizeSchedule(schedule: ScheduleSummary): string {
     i = j + 1;
   }
   return parts.join(', ') || 'Sin dias laborales';
+}
+
+function summarizeSchedule(schedule: ScheduleSummary): string {
+  if (!schedule.details || schedule.details.length === 0) return 'Sin dias configurados';
+  if (schedule.scheduleType === 'BIWEEKLY_ROTATING') {
+    const a = summarizeDays(schedule.details.filter((d) => d.week === 'A'));
+    const b = summarizeDays(schedule.details.filter((d) => d.week === 'B'));
+    return `Semana A: ${a} · Semana B: ${b}`;
+  }
+  return summarizeDays(schedule.details);
+}
+
+/** Editor reutilizable de los 7 dias de una semana -- usado 1x (horario normal) o 2x (rotativo, una vez por Semana A/B). */
+function DaysEditor({ days, onChange }: { days: ScheduleDayInput[]; onChange: (days: ScheduleDayInput[]) => void }) {
+  function updateDay(index: number, patch: Partial<ScheduleDayInput>) {
+    onChange(days.map((d, i) => (i === index ? { ...d, ...patch } : d)));
+  }
+
+  return (
+    <div className="space-y-2">
+      {DAYS.map(({ value, label }, i) => (
+        <div key={value} className="flex items-center gap-2 rounded-md bg-surface-card p-2">
+          <label className="flex w-28 shrink-0 items-center gap-1.5 text-xs font-medium text-ink">
+            <input type="checkbox" checked={days[i].isWorkingDay} onChange={(e) => updateDay(i, { isWorkingDay: e.target.checked })} />
+            {label}
+          </label>
+          {days[i].isWorkingDay ? (
+            <>
+              <input
+                type="time"
+                required
+                value={days[i].startTime ?? ''}
+                onChange={(e) => updateDay(i, { startTime: e.target.value })}
+                className={`${inputClass} flex-1`}
+              />
+              <span className="text-xs text-ink-muted">a</span>
+              <input
+                type="time"
+                required
+                value={days[i].endTime ?? ''}
+                onChange={(e) => updateDay(i, { endTime: e.target.value })}
+                className={`${inputClass} flex-1`}
+              />
+            </>
+          ) : (
+            <span className="flex-1 text-xs text-ink-muted">Descanso</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ScheduleForm({
@@ -93,24 +146,27 @@ function ScheduleForm({
   const [lunchToleranceMinutes, setLunchToleranceMinutes] = useState(String(initial?.lunchToleranceMinutes ?? 10));
   const [finalExitWindowBeforeMin, setFinalExitWindowBeforeMin] = useState(String(initial?.finalExitWindowBeforeMin ?? 30));
   const [finalExitGraceMin, setFinalExitGraceMin] = useState(String(initial?.finalExitGraceMin ?? 180));
-  const [days, setDays] = useState<ScheduleDayInput[]>(() => {
-    if (!initial?.details) return defaultDays();
+  const [scheduleType, setScheduleType] = useState<ScheduleType>(initial?.scheduleType ?? 'WEEKLY');
+
+  function daysForWeek(details: ScheduleDetail[] | undefined, week: 'A' | 'B'): ScheduleDayInput[] {
     return DAYS.map(({ value }) => {
-      const d = initial.details!.find((x) => x.dayOfWeek === value);
+      const d = details?.find((x) => x.dayOfWeek === value && x.week === week);
       return {
+        week,
         dayOfWeek: value,
         isWorkingDay: d?.isWorkingDay ?? false,
         startTime: d?.startTime ?? '08:00',
         endTime: d?.endTime ?? '17:00',
       };
     });
-  });
+  }
+
+  const [daysA, setDaysA] = useState<ScheduleDayInput[]>(() => (initial?.details ? daysForWeek(initial.details, 'A') : defaultDays('A')));
+  const [daysB, setDaysB] = useState<ScheduleDayInput[]>(() =>
+    initial?.details && initial.scheduleType === 'BIWEEKLY_ROTATING' ? daysForWeek(initial.details, 'B') : defaultDays('B'),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  function updateDay(index: number, patch: Partial<ScheduleDayInput>) {
-    setDays((prev) => prev.map((d, i) => (i === index ? { ...d, ...patch } : d)));
-  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -119,6 +175,7 @@ function ScheduleForm({
     try {
       const body = {
         name,
+        scheduleType,
         weeklyHoursTarget: weeklyHoursTarget ? Number(weeklyHoursTarget) : undefined,
         defaultLunchMinutes: defaultLunchMinutes ? Number(defaultLunchMinutes) : undefined,
         lunchWindowStart: lunchWindowStart || undefined,
@@ -126,7 +183,7 @@ function ScheduleForm({
         lunchToleranceMinutes: lunchToleranceMinutes ? Number(lunchToleranceMinutes) : undefined,
         finalExitWindowBeforeMin: finalExitWindowBeforeMin ? Number(finalExitWindowBeforeMin) : undefined,
         finalExitGraceMin: finalExitGraceMin ? Number(finalExitGraceMin) : undefined,
-        days,
+        days: scheduleType === 'BIWEEKLY_ROTATING' ? [...daysA, ...daysB] : daysA,
       };
       if (initial) {
         await updateSchedule(initial.id, body);
@@ -163,6 +220,36 @@ function ScheduleForm({
           onChange={(e) => setWeeklyHoursTarget(e.target.value)}
           className={`mt-1 w-full ${inputClass}`}
         />
+      </div>
+
+      <div>
+        <label className={labelClass}>Tipo de horario</label>
+        <div className="mt-1 inline-flex rounded-lg border border-line-axis p-1">
+          <button
+            type="button"
+            onClick={() => setScheduleType('WEEKLY')}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              scheduleType === 'WEEKLY' ? 'bg-ink text-white' : 'text-ink-secondary hover:bg-surface-page'
+            }`}
+          >
+            Normal (una semana)
+          </button>
+          <button
+            type="button"
+            onClick={() => setScheduleType('BIWEEKLY_ROTATING')}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              scheduleType === 'BIWEEKLY_ROTATING' ? 'bg-ink text-white' : 'text-ink-secondary hover:bg-surface-page'
+            }`}
+          >
+            Rotativo (Semana A / Semana B)
+          </button>
+        </div>
+        {scheduleType === 'BIWEEKLY_ROTATING' && (
+          <p className="mt-1 text-xs text-ink-muted">
+            Alterna A→B→A→B indefinidamente. Cada empleado con este horario define su propia fecha de inicio y en cual
+            semana arranca, desde Empleados.
+          </p>
+        )}
       </div>
 
       <div className="space-y-2 rounded-md bg-surface-page p-3">
@@ -241,41 +328,20 @@ function ScheduleForm({
         </div>
       </div>
 
-      <div className="space-y-2">
-        {DAYS.map(({ value, label }, i) => (
-          <div key={value} className="flex items-center gap-2 rounded-md bg-surface-card p-2">
-            <label className="flex w-28 shrink-0 items-center gap-1.5 text-xs font-medium text-ink">
-              <input
-                type="checkbox"
-                checked={days[i].isWorkingDay}
-                onChange={(e) => updateDay(i, { isWorkingDay: e.target.checked })}
-              />
-              {label}
-            </label>
-            {days[i].isWorkingDay ? (
-              <>
-                <input
-                  type="time"
-                  required
-                  value={days[i].startTime ?? ''}
-                  onChange={(e) => updateDay(i, { startTime: e.target.value })}
-                  className={`${inputClass} flex-1`}
-                />
-                <span className="text-xs text-ink-muted">a</span>
-                <input
-                  type="time"
-                  required
-                  value={days[i].endTime ?? ''}
-                  onChange={(e) => updateDay(i, { endTime: e.target.value })}
-                  className={`${inputClass} flex-1`}
-                />
-              </>
-            ) : (
-              <span className="flex-1 text-xs text-ink-muted">Descanso</span>
-            )}
+      {scheduleType === 'BIWEEKLY_ROTATING' ? (
+        <div className="space-y-4">
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">Semana A</div>
+            <DaysEditor days={daysA} onChange={setDaysA} />
           </div>
-        ))}
-      </div>
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">Semana B</div>
+            <DaysEditor days={daysB} onChange={setDaysB} />
+          </div>
+        </div>
+      ) : (
+        <DaysEditor days={daysA} onChange={setDaysA} />
+      )}
 
       {error && <p className="text-xs text-red-700">{error}</p>}
       <Button disabled={saving} type="submit" className="w-full">
@@ -391,12 +457,17 @@ function PositionForm({
       <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="ej. Cajero" className={`w-full ${inputClass}`} />
       <select value={scheduleId} onChange={(e) => setScheduleId(e.target.value)} className={`w-full ${inputClass}`}>
         <option value="">Sin horario asignado</option>
-        {schedules.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.name}
-          </option>
-        ))}
+        {schedules
+          .filter((s) => s.scheduleType !== 'BIWEEKLY_ROTATING')
+          .map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
       </select>
+      <p className="text-xs text-ink-muted">
+        Los horarios rotativos (Semana A/B) no se pueden asignar a un cargo -- se asignan individualmente desde Empleados.
+      </p>
       {error && <p className="text-xs text-red-700">{error}</p>}
       <div className="flex gap-2">
         <Button disabled={saving} type="submit" className="flex-1">

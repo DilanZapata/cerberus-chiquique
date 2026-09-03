@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { BadRequestException, Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { CycleWeek, UserRole } from '@prisma/client';
 import { CompaniesService } from './companies.service';
 import { UpdateCompanyDto } from './dto/update-company.dto';
 import { CreateDepartmentDto } from './dto/create-department.dto';
@@ -58,6 +58,23 @@ export class CompaniesController {
   @Get('me/schedules')
   listSchedules(@CurrentUser() user: AuthenticatedUser) {
     return this.companiesService.listSchedules(user.companyId);
+  }
+
+  /**
+   * Vista previa PURA de como alterna un ciclo Semana A/Semana B para un
+   * ancla+semana inicial dados, sin depender de que exista ya un Schedule ni
+   * un empleado -- util en el formulario de alta/edicion de empleado para
+   * mostrar el resultado antes de guardar nada.
+   */
+  @Get('me/schedules/cycle-preview')
+  previewCycleWeeks(@Query('anchorDate') anchorDate?: string, @Query('startWeek') startWeek?: string, @Query('weeks') weeks?: string) {
+    if (!anchorDate || !startWeek) throw new BadRequestException('anchorDate y startWeek son obligatorios.');
+    if (startWeek !== CycleWeek.A && startWeek !== CycleWeek.B) throw new BadRequestException('startWeek debe ser "A" o "B".');
+    const weekCount = weeks ? Number(weeks) : 4;
+    if (!Number.isInteger(weekCount) || weekCount < 1 || weekCount > 12) {
+      throw new BadRequestException('weeks debe ser un entero entre 1 y 12.');
+    }
+    return this.companiesService.previewCycleWeeks(new Date(`${anchorDate}T00:00:00`), startWeek, weekCount);
   }
 
   @Roles(UserRole.ADMIN, UserRole.HR)

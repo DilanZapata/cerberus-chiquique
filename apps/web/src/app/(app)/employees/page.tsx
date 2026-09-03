@@ -6,6 +6,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Building2, Plus, Users, MapPin, ScanFace, Pencil, UserX, Upload } from 'lucide-react';
 import {
   CompanyInfo,
+  CycleWeek,
+  CycleWeekPreview,
   Department,
   Employee,
   Position,
@@ -23,9 +25,11 @@ import {
   getPositions,
   getSchedules,
   getWorkSites,
+  previewCycleWeeks,
   revokeFace,
   updateEmployee,
   updateMyCompany,
+  updateUserSchedule,
 } from '@/lib/api';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
@@ -343,6 +347,107 @@ function WorkSiteField({
   );
 }
 
+/**
+ * Selector de horario individual + (si el horario elegido es rotativo)
+ * fecha de inicio del ciclo y semana inicial. Reutilizado por el alta y la
+ * edicion de empleado -- misma UI, mismos campos condicionales.
+ */
+function IndividualScheduleField({
+  schedules,
+  scheduleId,
+  onScheduleIdChange,
+  cycleAnchorDate,
+  onCycleAnchorDateChange,
+  cycleStartWeek,
+  onCycleStartWeekChange,
+}: {
+  schedules: ScheduleSummary[];
+  scheduleId: string;
+  onScheduleIdChange: (id: string) => void;
+  cycleAnchorDate: string;
+  onCycleAnchorDateChange: (v: string) => void;
+  cycleStartWeek: CycleWeek | '';
+  onCycleStartWeekChange: (v: CycleWeek | '') => void;
+}) {
+  const selected = schedules.find((s) => s.id === scheduleId);
+  const isRotating = selected?.scheduleType === 'BIWEEKLY_ROTATING';
+  const [preview, setPreview] = useState<CycleWeekPreview[] | null>(null);
+
+  useEffect(() => {
+    if (!isRotating || !cycleAnchorDate || !cycleStartWeek) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    previewCycleWeeks(cycleAnchorDate, cycleStartWeek, 4)
+      .then((p) => !cancelled && setPreview(p))
+      .catch(() => !cancelled && setPreview(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [isRotating, cycleAnchorDate, cycleStartWeek]);
+
+  return (
+    <div className="sm:col-span-2">
+      <label className={labelClass}>Horario individual (opcional, anula el del cargo)</label>
+      <select value={scheduleId} onChange={(e) => onScheduleIdChange(e.target.value)} className={`mt-1 w-full ${inputClass}`}>
+        <option value="">Usar el del cargo</option>
+        {schedules.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+            {s.scheduleType === 'BIWEEKLY_ROTATING' ? ' (rotativo Semana A/B)' : ''}
+          </option>
+        ))}
+      </select>
+      {isRotating && (
+        <div className="mt-2 grid grid-cols-2 gap-3 rounded-lg border border-line-axis p-2.5">
+          <div>
+            <label className={labelClass}>Fecha de inicio del ciclo</label>
+            <input
+              required
+              type="date"
+              value={cycleAnchorDate}
+              onChange={(e) => onCycleAnchorDateChange(e.target.value)}
+              className={`mt-1 w-full ${inputClass}`}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Semana inicial</label>
+            <select
+              required
+              value={cycleStartWeek}
+              onChange={(e) => onCycleStartWeekChange(e.target.value as CycleWeek)}
+              className={`mt-1 w-full ${inputClass}`}
+            >
+              <option value="">Elegir...</option>
+              <option value="A">Semana A</option>
+              <option value="B">Semana B</option>
+            </select>
+          </div>
+          <p className="col-span-2 text-xs text-ink-muted">
+            Este empleado arranca su ciclo en esa fecha, en la semana elegida, y de ahi en adelante alterna A→B→A→B
+            indefinidamente.
+          </p>
+          {preview && (
+            <div className="col-span-2 flex flex-wrap gap-1.5">
+              {preview.map((p) => (
+                <span
+                  key={p.weekStart}
+                  className={`rounded-md px-2 py-1 text-xs font-medium ${
+                    p.week === 'A' ? 'bg-brand-50 text-brand-700' : 'bg-amber-50 text-amber-700'
+                  }`}
+                >
+                  Semana {p.week}: {p.weekStart} → {p.weekEnd}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CreateEmployeeForm({
   departments,
   workSites,
@@ -367,6 +472,8 @@ function CreateEmployeeForm({
   const [workSiteIds, setWorkSiteIds] = useState<string[]>([]);
   const [positionId, setPositionId] = useState('');
   const [scheduleId, setScheduleId] = useState('');
+  const [cycleAnchorDate, setCycleAnchorDate] = useState('');
+  const [cycleStartWeek, setCycleStartWeek] = useState<CycleWeek | ''>('');
   const [hireDate, setHireDate] = useState('');
   const [baseSalary, setBaseSalary] = useState('');
   const [allowsLunchSkip, setAllowsLunchSkip] = useState(false);
@@ -374,6 +481,8 @@ function CreateEmployeeForm({
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const isRotating = schedules.find((s) => s.id === scheduleId)?.scheduleType === 'BIWEEKLY_ROTATING';
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -390,6 +499,8 @@ function CreateEmployeeForm({
         workSiteIds: workSiteIds.length ? workSiteIds : undefined,
         positionId: positionId || undefined,
         scheduleId: scheduleId || undefined,
+        cycleAnchorDate: isRotating ? cycleAnchorDate || undefined : undefined,
+        cycleStartWeek: isRotating && cycleStartWeek ? cycleStartWeek : undefined,
         hireDate,
         baseSalary: baseSalary ? Number(baseSalary) : undefined,
         allowsLunchSkip,
@@ -458,17 +569,15 @@ function CreateEmployeeForm({
             ))}
           </select>
         </div>
-        <div>
-          <label className={labelClass}>Horario individual (opcional, anula el del cargo)</label>
-          <select value={scheduleId} onChange={(e) => setScheduleId(e.target.value)} className={`mt-1 w-full ${inputClass}`}>
-            <option value="">Usar el del cargo</option>
-            {schedules.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <IndividualScheduleField
+          schedules={schedules}
+          scheduleId={scheduleId}
+          onScheduleIdChange={setScheduleId}
+          cycleAnchorDate={cycleAnchorDate}
+          onCycleAnchorDateChange={setCycleAnchorDate}
+          cycleStartWeek={cycleStartWeek}
+          onCycleStartWeekChange={setCycleStartWeek}
+        />
         <div>
           <label className={labelClass}>Fecha de ingreso</label>
           <input required type="date" value={hireDate} onChange={(e) => setHireDate(e.target.value)} className={`mt-1 w-full ${inputClass}`} />
@@ -512,6 +621,7 @@ function EditEmployeeForm({
   departments,
   workSites,
   positions,
+  schedules,
   onSaved,
   onCancel,
 }: {
@@ -519,6 +629,7 @@ function EditEmployeeForm({
   departments: Department[];
   workSites: WorkSite[];
   positions: Position[];
+  schedules: ScheduleSummary[];
   onSaved: () => void;
   onCancel: () => void;
 }) {
@@ -534,6 +645,14 @@ function EditEmployeeForm({
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // El mas reciente (userSchedules[0], vienen ordenados desc por validFrom)
+  // es el horario individual vigente/mas reciente para prefill de edicion.
+  const currentSchedule = employee.userSchedules[0];
+  const [scheduleId, setScheduleId] = useState(currentSchedule?.scheduleId ?? '');
+  const [cycleAnchorDate, setCycleAnchorDate] = useState(currentSchedule?.cycleAnchorDate?.slice(0, 10) ?? '');
+  const [cycleStartWeek, setCycleStartWeek] = useState<CycleWeek | ''>(currentSchedule?.cycleStartWeek ?? '');
+  const isRotating = schedules.find((s) => s.id === scheduleId)?.scheduleType === 'BIWEEKLY_ROTATING';
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -552,6 +671,20 @@ function EditEmployeeForm({
         password: password || undefined,
         pin: pin || undefined,
       });
+
+      const scheduleChanged =
+        scheduleId !== (currentSchedule?.scheduleId ?? '') ||
+        (isRotating &&
+          (cycleAnchorDate !== (currentSchedule?.cycleAnchorDate?.slice(0, 10) ?? '') ||
+            cycleStartWeek !== (currentSchedule?.cycleStartWeek ?? '')));
+      if (scheduleChanged) {
+        await updateUserSchedule(employee.id, {
+          scheduleId: scheduleId || null,
+          cycleAnchorDate: isRotating ? cycleAnchorDate || undefined : undefined,
+          cycleStartWeek: isRotating && cycleStartWeek ? cycleStartWeek : undefined,
+        });
+      }
+
       onSaved();
     } catch (err) {
       setError((err as Error).message);
@@ -606,6 +739,15 @@ function EditEmployeeForm({
             ))}
           </select>
         </div>
+        <IndividualScheduleField
+          schedules={schedules}
+          scheduleId={scheduleId}
+          onScheduleIdChange={setScheduleId}
+          cycleAnchorDate={cycleAnchorDate}
+          onCycleAnchorDateChange={setCycleAnchorDate}
+          cycleStartWeek={cycleStartWeek}
+          onCycleStartWeekChange={setCycleStartWeek}
+        />
         <div>
           <label className={labelClass}>Salario base</label>
           <input type="number" min={0} value={baseSalary} onChange={(e) => setBaseSalary(e.target.value)} className={`mt-1 w-full ${inputClass}`} />
@@ -764,6 +906,7 @@ export default function EmployeesPage() {
               departments={departments}
               workSites={workSites}
               positions={positions}
+              schedules={schedules}
               onSaved={() => {
                 setEditingEmployeeId(null);
                 loadAll();

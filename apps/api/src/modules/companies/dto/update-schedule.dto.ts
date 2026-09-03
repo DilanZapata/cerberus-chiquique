@@ -1,5 +1,6 @@
-import { ArrayMinSize, IsArray, IsNumber, IsOptional, IsString, Matches, Min, MinLength, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsEnum, IsNumber, IsOptional, IsString, Matches, Min, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ScheduleType } from '@prisma/client';
 import { ScheduleDayDto } from './schedule-day.dto';
 
 export class UpdateScheduleDto {
@@ -7,6 +8,10 @@ export class UpdateScheduleDto {
   @IsString()
   @MinLength(2)
   name?: string;
+
+  @IsOptional()
+  @IsEnum(ScheduleType)
+  scheduleType?: ScheduleType;
 
   @IsOptional()
   @IsNumber()

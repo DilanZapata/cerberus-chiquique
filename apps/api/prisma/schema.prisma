@@ -70,6 +70,22 @@ enum DayOfWeek {
   @@map("day_of_week_enum")
 }
 
+enum ScheduleType {
+  WEEKLY
+  BIWEEKLY_ROTATING
+
+  @@map("schedule_type_enum")
+}
+
+// Semana activa dentro de un ciclo rotativo de dos semanas. Para un Schedule
+// WEEKLY, todas las filas de ScheduleDetail quedan en A (unica semana usada).
+enum CycleWeek {
+  A
+  B
+
+  @@map("cycle_week_enum")
+}
+
 enum HolidayType {
   FIJO
   LEY_EMILIANI
@@ -266,9 +282,14 @@ model User {
 // =====================================================================
 
 model Schedule {
-  id                      String   @id @default(uuid())
-  companyId               String   @map("company_id")
+  id                      String       @id @default(uuid())
+  companyId               String       @map("company_id")
   name                    String
+  // WEEKLY (default): un unico juego de 7 dias que se repite cada semana.
+  // BIWEEKLY_ROTATING: dos juegos de 7 dias (semana A / semana B) que
+  // alternan segun el ancla individual de cada UserSchedule asignado (nunca
+  // se puede asignar a un Position, que es compartido sin ancla propia).
+  scheduleType            ScheduleType @default(WEEKLY) @map("schedule_type")
   weeklyHoursTarget       Decimal  @default(42.00) @map("weekly_hours_target") @db.Decimal(5, 2)
   defaultLunchMinutes     Int      @default(60) @map("default_lunch_minutes")
   lunchWindowStart        DateTime @default(dbgenerated("'12:00'")) @map("lunch_window_start") @db.Time
@@ -295,6 +316,9 @@ model Schedule {
 model ScheduleDetail {
   id             String    @id @default(uuid())
   scheduleId     String    @map("schedule_id")
+  // Semana del ciclo a la que pertenece esta fila. Siempre A para Schedule
+  // WEEKLY (unica semana); A o B para BIWEEKLY_ROTATING (7 filas por semana).
+  week           CycleWeek @default(A)
   dayOfWeek      DayOfWeek @map("day_of_week")
   isWorkingDay   Boolean   @default(true) @map("is_working_day")
   startTime      DateTime? @map("start_time") @db.Time
@@ -303,7 +327,7 @@ model ScheduleDetail {
 
   schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 
-  @@unique([scheduleId, dayOfWeek])
+  @@unique([scheduleId, week, dayOfWeek])
   @@map("schedule_details")
 }
 
@@ -313,6 +337,12 @@ model UserSchedule {
   scheduleId String    @map("schedule_id")
   validFrom  DateTime  @map("valid_from") @db.Date
   validTo    DateTime? @map("valid_to") @db.Date
+  // Ancla del ciclo rotativo: obligatorios (validado en el service) cuando
+  // el Schedule asignado es BIWEEKLY_ROTATING; null para horarios WEEKLY.
+  // Individuales por asignacion, no por Schedule: dos empleados pueden
+  // compartir el mismo Schedule rotativo e iniciar en semanas distintas.
+  cycleAnchorDate DateTime?  @map("cycle_anchor_date") @db.Date
+  cycleStartWeek  CycleWeek? @map("cycle_start_week")
   createdAt  DateTime  @default(now()) @map("created_at")
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)

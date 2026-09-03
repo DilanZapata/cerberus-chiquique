@@ -1,11 +1,17 @@
-import { ArrayMinSize, IsArray, IsNumber, IsOptional, IsString, Matches, Min, MinLength, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsEnum, IsNumber, IsOptional, IsString, Matches, Min, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ScheduleType } from '@prisma/client';
 import { ScheduleDayDto } from './schedule-day.dto';
 
 export class CreateScheduleDto {
   @IsString()
   @MinLength(2)
   name!: string;
+
+  /** WEEKLY (default, si se omite): una sola semana que se repite. BIWEEKLY_ROTATING: alterna Semana A / Semana B. */
+  @IsOptional()
+  @IsEnum(ScheduleType)
+  scheduleType?: ScheduleType;
 
   @IsOptional()
   @IsNumber()

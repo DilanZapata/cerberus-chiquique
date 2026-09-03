@@ -12,7 +12,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { UserRole } from '@prisma/client';
+import { CycleWeek, UserRole } from '@prisma/client';
 
 export class CreateUserDto {
   @IsString()
@@ -53,6 +53,16 @@ export class CreateUserDto {
   @IsOptional()
   @IsUUID()
   scheduleId?: string;
+
+  /** Obligatoria (validado en el service) si el horario elegido es rotativo (Semana A/B). */
+  @IsOptional()
+  @IsDateString()
+  cycleAnchorDate?: string;
+
+  /** Obligatoria (validado en el service) si el horario elegido es rotativo (Semana A/B). */
+  @IsOptional()
+  @IsEnum(CycleWeek)
+  cycleStartWeek?: CycleWeek;
 
   @IsDateString()
   hireDate!: string;
