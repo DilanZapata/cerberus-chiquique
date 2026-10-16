@@ -3,8 +3,10 @@ import {
   calculateDailyNovelties,
   getIsoWeekKey,
   PlannedShiftWindow,
+  round,
 } from '@cerberus/cst-rules';
 import {
+  CalculatedNovelty,
   DailyCalculationResult,
   LunchPolicy,
   NoveltyCode,
@@ -49,7 +51,28 @@ const DAY_OF_WEEK_BY_INDEX: DayOfWeek[] = [
   DayOfWeek.SATURDAY,
 ];
 
-const SUNDAY_HOLIDAY_CODES: PrismaNoveltyCode[] = ['DDCOF', 'DNCOF'] as PrismaNoveltyCode[];
+// Cualquier codigo que solo puede generarse por trabajar un domingo/festivo
+// (ver packages/cst-rules/src/hours-classifier.ts: los 4 solo se asignan
+// dentro de `if (segment.isHolidaySunday)`). Antes solo se incluian DDCOF/
+// DNCOF (hora ORDINARIA dominical/festiva): un trabajador sin el domingo
+// como dia laborable en su horario regular clasifica el 100% de sus horas
+// de domingo como EXTRA (HEFD/HEFN, dia de descanso programado = cupo
+// ordinario 0), por lo que para el perfil mas comun el contador de
+// habitualidad (Art. 180 CST) nunca avanzaba y el descanso compensatorio
+// jamas se generaba. Corrige el hallazgo F.1 de la auditoria 2026-10-16.
+// Dias calendario consecutivos trabajados que la ley permite ANTES de que
+// se exija un dia de descanso (Art. 160 CST: descanso semanal obligatorio).
+// El 7mo dia consecutivo dispara la alerta SIN_DESCANSO_SEMANAL. Corrige el
+// hallazgo F.2 de la auditoria 2026-10-16 (P2, item 11): el motor calculaba
+// las horas de cada dia correctamente pero no existia ningun mecanismo que
+// detectara la ausencia de descanso semanal, aunque el dato (marcas dia tras
+// dia) ya estaba disponible.
+const MAX_CONSECUTIVE_WORK_DAYS = 6;
+// Tope de seguridad para el recorrido hacia atras (nunca deberia alcanzarse
+// en la practica: se detiene en el primer dia sin horas trabajadas).
+const MAX_LOOKBACK_DAYS_FOR_REST_CHECK = 60;
+
+const SUNDAY_HOLIDAY_CODES: PrismaNoveltyCode[] = ['DDCOF', 'DNCOF', 'HEFD', 'HEFN'] as PrismaNoveltyCode[];
 
 export interface ShiftResolution {
   plannedShift?: PlannedShiftWindow;
@@ -123,9 +146,22 @@ export class NoveltiesService {
     const result = await this.computeDayResult(userId, date);
     await this.persist(userId, workDate, result);
 
+    // Incluye HEFD/HEFN (extra festiva/dominical): sin ellos, un trabajador
+    // sin el domingo como dia laborable regular nunca activaba este chequeo
+    // (ver comentario de SUNDAY_HOLIDAY_CODES mas arriba).
     const workedSundayOrHoliday = result.novelties.some(
-      (n) => (n.code === NoveltyCode.DDCOF || n.code === NoveltyCode.DNCOF) && n.hours > 0,
+      (n) =>
+        (n.code === NoveltyCode.DDCOF ||
+          n.code === NoveltyCode.DNCOF ||
+          n.code === NoveltyCode.HEFD ||
+          n.code === NoveltyCode.HEFN) &&
+        n.hours > 0,
     );
+    if (result.totalWorkedHours > 0) {
+      const restAlert = await this.checkWeeklyRestCompliance(userId, date);
+      if (restAlert) result.novelties.push(restAlert);
+    }
+
     if (workedSundayOrHoliday) {
       const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { companyId: true } });
       const payrollConfig = await this.payrollConfigService.resolveEffective(user.companyId, date);
@@ -229,6 +265,57 @@ export class NoveltiesService {
     });
   }
 
+  /**
+   * Cuenta los dias calendario consecutivos (terminando en `date`, inclusive)
+   * con horas trabajadas > 0, usando `attendanceDailyTotal` (ya persistido
+   * por `persist()` para `date` antes de llegar aqui). Si supera
+   * `MAX_CONSECUTIVE_WORK_DAYS`, deja una alerta `SIN_DESCANSO_SEMANAL` (Art.
+   * 160 CST) -- informativa, no bloquea nada, igual que las demas alertas de
+   * cumplimiento de este motor.
+   */
+  private async checkWeeklyRestCompliance(userId: string, date: Date): Promise<CalculatedNovelty | null> {
+    let consecutiveDays = 0;
+    let day = date;
+    for (let i = 0; i < MAX_LOOKBACK_DAYS_FOR_REST_CHECK; i++) {
+      const total = await this.prisma.attendanceDailyTotal.findUnique({
+        where: { userId_workDate: { userId, workDate: day } },
+      });
+      if (!total || total.totalWorkedHours.toNumber() <= 0) break;
+      consecutiveDays++;
+      day = addDays(day, -1);
+    }
+
+    await this.prisma.novelty.deleteMany({
+      where: { userId, workDate: date, code: PrismaNoveltyCode.SIN_DESCANSO_SEMANAL },
+    });
+
+    if (consecutiveDays <= MAX_CONSECUTIVE_WORK_DAYS) return null;
+
+    const notes = `Van ${consecutiveDays} dias calendario consecutivos trabajados sin ningun dia de descanso (Art. 160 CST, descanso semanal obligatorio).`;
+    await this.prisma.novelty.create({
+      data: {
+        userId,
+        workDate: date,
+        code: PrismaNoveltyCode.SIN_DESCANSO_SEMANAL,
+        hours: 0,
+        status: PrismaNoveltyStatus.AUTO_CALCULADA,
+        origin: PrismaNoveltyOrigin.SISTEMA,
+        notes,
+      },
+    });
+    // Se refleja tambien en el `result` devuelto por `calculateAndPersistForDay`
+    // (ver llamador), que ya habia sido persistido por `persist()` antes de
+    // que esta alerta se evaluara -- sin este push, el valor de retorno de la
+    // misma llamada HTTP/funcion no incluia la alerta que SI quedo en la BD.
+    return {
+      code: NoveltyCode.SIN_DESCANSO_SEMANAL,
+      hours: 0,
+      status: NoveltyStatus.AUTO_CALCULADA,
+      origin: NoveltyOrigin.SISTEMA,
+      notes,
+    };
+  }
+
   /** Calcula el resultado del dia SIN persistir (usado tambien para reconstruir el acumulado semanal). */
   private async computeDayResult(userId: string, date: Date): Promise<DailyCalculationResult> {
     const user = await this.prisma.user.findUnique({
@@ -246,6 +333,69 @@ export class NoveltiesService {
         this.getWeekAccumulated(userId, date, 'totalOrdinaryHours'),
         this.getWeekAccumulated(userId, date, 'totalOvertimeHours'),
       ]);
+
+    // Dos casos que antes el motor dejaba pasar en silencio (sin ninguna
+    // novedad ni alerta), corregidos por la auditoria 2026-10-16 (hallazgos
+    // F.4 y F.6): `findShiftMarks`/`getDayMarks` ancla TODO el turno a la
+    // existencia de un CHECK_IN, asi que sin el, `marks` llega vacio aunque
+    // existan otras marcas reales ese dia.
+    if (!marks.checkIn) {
+      const dayEnd = addDays(date, 1);
+      const rawMarkCount = await this.prisma.timeLog.count({ where: { userId, loggedAt: { gte: date, lt: dayEnd } } });
+      const workDate = date.toISOString().slice(0, 10);
+
+      if (rawMarkCount > 0) {
+        // Hay marcas reales ese dia (almuerzo y/o salida) pero falta la de
+        // entrada: caso ambiguo, no se puede calcular la jornada con
+        // seguridad. Antes se descartaba el dia completo sin avisar.
+        return {
+          userId,
+          workDate,
+          novelties: [
+            {
+              code: NoveltyCode.JORNADA_REQUIERE_REVISION,
+              hours: 0,
+              status: NoveltyStatus.AUTO_CALCULADA,
+              origin: NoveltyOrigin.SISTEMA,
+              notes:
+                'Existen marcas de almuerzo y/o salida este dia, pero falta la marca de entrada (CHECK_IN); el calculo automatico no puede determinar la jornada con seguridad y requiere correccion manual.',
+            },
+          ],
+          totalOrdinaryHours: 0,
+          totalOvertimeHours: 0,
+          totalWorkedHours: 0,
+          hasPendingOvertime: false,
+        };
+      }
+
+      if (shiftResolution.plannedShift && !shiftResolution.isScheduledRestDay) {
+        // Dia programado como laborable (y no es descanso), sin absolutamente
+        // ninguna marca ni incidencia aprobada que lo cubra (ya se descarto
+        // esa cobertura mas arriba, en persistIncidenceCoverage): ausencia
+        // injustificada. Antes esto producia exactamente el mismo resultado
+        // que un dia de descanso real (cero novedades).
+        const plannedHours = round(
+          (shiftResolution.plannedShift.end.getTime() - shiftResolution.plannedShift.start.getTime()) / 3_600_000,
+        );
+        return {
+          userId,
+          workDate,
+          novelties: [
+            {
+              code: NoveltyCode.AUSENCIA_INJUSTIFICADA,
+              hours: plannedHours,
+              status: NoveltyStatus.AUTO_CALCULADA,
+              origin: NoveltyOrigin.SISTEMA,
+              notes: 'Dia programado como laborable, sin ninguna marca de asistencia ni incidencia aprobada que lo cubra.',
+            },
+          ],
+          totalOrdinaryHours: 0,
+          totalOvertimeHours: 0,
+          totalWorkedHours: 0,
+          hasPendingOvertime: false,
+        };
+      }
+    }
 
     return calculateDailyNovelties({
       userId,

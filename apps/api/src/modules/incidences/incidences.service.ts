@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { NoveltyStatus as PrismaNoveltyStatus, NoveltyCode as PrismaNoveltyCode } from '@prisma/client';
 import { NoveltyStatus } from '@cerberus/shared-types';
 import { PrismaService } from '../../database/prisma.service';
@@ -25,7 +25,16 @@ export class IncidencesService {
     private readonly noveltiesService: NoveltiesService,
   ) {}
 
-  create(dto: CreateIncidenceDto) {
+  /** `companyId` SIEMPRE del JWT de quien crea la incidencia: antes de esta
+   * correccion cualquier usuario autenticado podia crear una incidencia
+   * (permiso, incapacidad) para el `userId` de CUALQUIER empresa, inyectando
+   * datos que luego alimentarian el calculo de nomina de una empresa ajena
+   * (auditoria 2026-10-16, seccion C.1.d). */
+  async create(companyId: string, dto: CreateIncidenceDto) {
+    const target = await this.prisma.user.findUnique({ where: { id: dto.userId }, select: { companyId: true } });
+    if (!target || target.companyId !== companyId) {
+      throw new ForbiddenException('El empleado indicado no pertenece a tu empresa.');
+    }
     return this.prisma.incidence.create({
       data: {
         userId: dto.userId,
@@ -40,11 +49,12 @@ export class IncidencesService {
     });
   }
 
-  listPending(departmentId?: string) {
+  /** `companyId` SIEMPRE del JWT de quien consulta (mismo hallazgo que `create`). */
+  listPending(companyId: string, departmentId?: string) {
     return this.prisma.incidence.findMany({
       where: {
         status: PrismaNoveltyStatus.PENDIENTE,
-        user: departmentId ? { departmentId } : undefined,
+        user: { companyId, ...(departmentId ? { departmentId } : {}) },
       },
       include: {
         user: { select: { id: true, fullName: true, employeeCode: true, departmentId: true } },
@@ -53,8 +63,11 @@ export class IncidencesService {
     });
   }
 
-  async review(incidenceId: string, dto: ReviewIncidenceDto, reviewedById: string) {
-    const incidence = await this.prisma.incidence.findUnique({ where: { id: incidenceId } });
+  /** `companyId` SIEMPRE del JWT de quien revisa (mismo hallazgo que `create`);
+   * se responde igual que "no encontrada" para no revelar que la incidencia
+   * existe en otra empresa. */
+  async review(incidenceId: string, dto: ReviewIncidenceDto, reviewedById: string, companyId: string) {
+    const incidence = await this.prisma.incidence.findFirst({ where: { id: incidenceId, user: { companyId } } });
     if (!incidence) {
       throw new NotFoundException(`Incidencia ${incidenceId} no encontrada`);
     }

@@ -27,8 +27,8 @@ export class NoveltiesController {
   /** Panel de aprobacion: lista horas extra pendientes de autorizacion. */
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
   @Get('overtime/pending')
-  listPendingOvertime(@Query('departmentId') departmentId?: string) {
-    return this.overtimeApprovalService.listPending(departmentId);
+  listPendingOvertime(@CurrentUser() currentUser: AuthenticatedUser, @Query('departmentId') departmentId?: string) {
+    return this.overtimeApprovalService.listPending(currentUser.companyId, departmentId);
   }
 
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
@@ -38,6 +38,6 @@ export class NoveltiesController {
     @Body() dto: ReviewNoveltyDto,
     @CurrentUser() currentUser: AuthenticatedUser,
   ) {
-    return this.overtimeApprovalService.review(overtimeApprovalId, dto, currentUser.id);
+    return this.overtimeApprovalService.review(overtimeApprovalId, dto, currentUser.id, currentUser.companyId);
   }
 }

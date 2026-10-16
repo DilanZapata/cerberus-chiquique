@@ -7,6 +7,15 @@ import { findShiftMarks } from '../../common/utils/shift-marks.util';
 import { NoveltiesService } from '../novelties/novelties.service';
 
 export const LOOKBACK_DAYS = 3;
+// Barrido lento (una vez al dia) para jornadas abiertas MAS ANTIGUAS que
+// LOOKBACK_DAYS: el barrido rapido de cada 30 min nunca vuelve a mirar atras
+// de esa ventana, asi que una jornada que quedo abierta mas tiempo que eso
+// (por una falla del kiosco, una ausencia prolongada mal registrada, etc.)
+// quedaba abierta para siempre, sin que nadie la detectara (hallazgo C.3 /
+// F.5 de la auditoria 2026-10-16). Un rango de 2 anios es, en la practica,
+// "sin limite" para este sistema, sin escanear la tabla completa de marcas
+// desde el origen de los tiempos en cada ejecucion.
+export const SLOW_SWEEP_LOOKBACK_DAYS = 730;
 // Margen por defecto (minutos) tras la hora de salida programada antes de
 // considerar una jornada "abierta e incompleta" y candidata a cierre
 // automatico, usado solo cuando el horario resuelto no trae su propio
@@ -40,8 +49,23 @@ export class JornadaCierreService {
 
   @Cron('*/30 * * * *', { timeZone: 'America/Bogota' })
   async closeOverdueOpenShifts() {
+    return this.closeOverdueOpenShiftsSince(LOOKBACK_DAYS);
+  }
+
+  /**
+   * Barrido lento, una vez al dia: cubre jornadas abiertas de hasta
+   * `SLOW_SWEEP_LOOKBACK_DAYS` de antiguedad, que el barrido rapido de arriba
+   * (acotado a `LOOKBACK_DAYS`) nunca vuelve a mirar. Corre a una hora de
+   * baja actividad (3:17am Bogota) para no competir con el barrido rapido.
+   */
+  @Cron('17 3 * * *', { timeZone: 'America/Bogota' })
+  async closeStaleOpenShifts() {
+    return this.closeOverdueOpenShiftsSince(SLOW_SWEEP_LOOKBACK_DAYS);
+  }
+
+  private async closeOverdueOpenShiftsSince(lookbackDays: number) {
     const now = new Date();
-    const lookbackStart = addDays(startOfLocalDay(now), -LOOKBACK_DAYS);
+    const lookbackStart = addDays(startOfLocalDay(now), -lookbackDays);
 
     const checkIns = await this.prisma.timeLog.findMany({
       where: { logType: TimeLogType.CHECK_IN, loggedAt: { gte: lookbackStart, lte: now } },

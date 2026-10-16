@@ -3,7 +3,8 @@ import * as bcrypt from 'bcrypt';
 import { TimeLogSource, User, WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
-import { resolveNextMark } from '../../common/utils/shift-marks.util';
+import { describeClosedShift, findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
+import { startOfLocalDay } from '../../common/utils/time.util';
 import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { NoveltiesService } from '../novelties/novelties.service';
@@ -135,7 +136,8 @@ export class KioskService {
     const context = await this.noveltiesService.resolveMarkContext(user.id, now);
     const resolved = await resolveNextMark(this.prisma, user.id, now, context);
     if (!resolved) {
-      throw new BadRequestException(`${user.fullName} ya completo las 4 marcas de hoy.`);
+      const todayMarks = await findShiftMarks(this.prisma, user.id, startOfLocalDay(now));
+      throw new BadRequestException(`${user.fullName}: ${describeClosedShift(todayMarks)}`);
     }
 
     // Chequeo rapido (sin lock) ANTES de tocar la foto: cubre el caso comun

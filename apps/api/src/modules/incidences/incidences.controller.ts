@@ -11,14 +11,14 @@ export class IncidencesController {
   constructor(private readonly incidencesService: IncidencesService) {}
 
   @Post()
-  create(@Body() dto: CreateIncidenceDto) {
-    return this.incidencesService.create(dto);
+  create(@CurrentUser() currentUser: AuthenticatedUser, @Body() dto: CreateIncidenceDto) {
+    return this.incidencesService.create(currentUser.companyId, dto);
   }
 
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
   @Get('pending')
-  listPending(@Query('departmentId') departmentId?: string) {
-    return this.incidencesService.listPending(departmentId);
+  listPending(@CurrentUser() currentUser: AuthenticatedUser, @Query('departmentId') departmentId?: string) {
+    return this.incidencesService.listPending(currentUser.companyId, departmentId);
   }
 
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
@@ -28,6 +28,6 @@ export class IncidencesController {
     @Body() dto: ReviewIncidenceDto,
     @CurrentUser() currentUser: AuthenticatedUser,
   ) {
-    return this.incidencesService.review(id, dto, currentUser.id);
+    return this.incidencesService.review(id, dto, currentUser.id, currentUser.companyId);
   }
 }

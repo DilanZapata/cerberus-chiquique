@@ -79,8 +79,13 @@ export class ReportsService {
           .reduce((sum, n) => sum + n.hours.toNumber(), 0);
       }
 
+      // Incluye RECHAZADA (antes solo PENDIENTE): al rechazar una hora extra
+      // no autorizada, las horas trabajadas desaparecian de todo el reporte
+      // -- ni se pagaban (correcto) ni quedaban documentadas en ninguna
+      // columna (incorrecto: "no autorizada" no significa que el trabajo no
+      // se realizo). Corrige el hallazgo F.3 de la auditoria 2026-10-16.
       row.unauthorizedHours = userNovelties
-        .filter((n) => n.status === 'PENDIENTE')
+        .filter((n) => n.status === 'PENDIENTE' || n.status === 'RECHAZADA')
         .reduce((sum, n) => sum + n.hours.toNumber(), 0);
 
       row.totalWorkedHours = totals

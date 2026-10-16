@@ -1,6 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { Prisma, ScheduleType, WorkSite } from '@prisma/client';
+import { Prisma, ScheduleType, UserRole, WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays, daysBetween, startOfLocalDay } from '../../common/utils/time.util';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -15,6 +15,20 @@ function serializeUser<T extends { workSites: { workSite: WorkSite }[] }>(user: 
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Solo ADMIN puede otorgar (a si mismo o a otro usuario) el rol ADMIN.
+   * Antes de esta correccion, `PUT /users/:id` aceptaba `role` como
+   * cualquier valor del enum sin ninguna regla de negocio, permitiendo que
+   * un usuario con rol HR se auto-ascendiera a ADMIN con una sola peticion
+   * (auditoria 2026-10-16, seccion C.2). HR si puede seguir asignando los
+   * demas roles (SUPERVISOR, EMPLOYEE), solo ADMIN queda reservado.
+   */
+  private assertCanAssignRole(actingUserRole: UserRole, targetRole: UserRole | undefined) {
+    if (targetRole === UserRole.ADMIN && actingUserRole !== UserRole.ADMIN) {
+      throw new ForbiddenException('Solo un usuario con rol ADMIN puede otorgar el rol ADMIN.');
+    }
+  }
 
   async list(companyId: string) {
     const users = await this.prisma.user.findMany({
@@ -44,7 +58,8 @@ export class UsersService {
     return serializeUser(user);
   }
 
-  async create(companyId: string, dto: CreateUserDto) {
+  async create(companyId: string, dto: CreateUserDto, actingUserRole: UserRole) {
+    this.assertCanAssignRole(actingUserRole, dto.role);
     const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : undefined;
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : undefined;
 
@@ -184,7 +199,8 @@ export class UsersService {
     return this.getOrThrow(companyId, userId);
   }
 
-  async update(companyId: string, id: string, dto: UpdateUserDto) {
+  async update(companyId: string, id: string, dto: UpdateUserDto, actingUserRole: UserRole) {
+    this.assertCanAssignRole(actingUserRole, dto.role);
     await this.getOrThrow(companyId, id);
     const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : undefined;
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : undefined;

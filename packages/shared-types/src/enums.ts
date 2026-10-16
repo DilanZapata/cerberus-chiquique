@@ -53,6 +53,9 @@ export enum NoveltyCode {
   SALIDA_NO_REGISTRADA = 'SALIDA_NO_REGISTRADA',
   // Caso ambiguo que el sistema no pudo resolver solo; queda pendiente de revision manual.
   JORNADA_REQUIERE_REVISION = 'JORNADA_REQUIERE_REVISION',
+  // Alerta de cumplimiento: N dias calendario consecutivos trabajados sin
+  // ningun dia de descanso (Art. 160 CST, descanso semanal obligatorio).
+  SIN_DESCANSO_SEMANAL = 'SIN_DESCANSO_SEMANAL',
 }
 
 // Codigos que van como columnas acumulativas en el reporte de nomina (seccion 3 del brief)

@@ -1,9 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, TimeLogSource, TimeLogType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { addDays } from '../../common/utils/time.util';
+import { addDays, startOfLocalDay } from '../../common/utils/time.util';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
-import { findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
+import { describeClosedShift, findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
 import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
@@ -139,7 +139,8 @@ export class TimeLogsService {
     const context = await this.noveltiesService.resolveMarkContext(userId, now);
     const resolved = await resolveNextMark(this.prisma, userId, now, context);
     if (!resolved) {
-      throw new BadRequestException('Ya completaste las 4 marcas de hoy.');
+      const todayMarks = await findShiftMarks(this.prisma, userId, startOfLocalDay(now));
+      throw new BadRequestException(describeClosedShift(todayMarks));
     }
 
     // Chequeo rapido (sin lock) ANTES de tocar la foto: cubre el caso comun
@@ -379,11 +380,15 @@ export class TimeLogsService {
     return results;
   }
 
-  /** Cambia solo la hora de una marca puntual ya existente (mantiene su dia calendario). */
-  async updateMark(companyId: string, id: string, hhmm: string) {
+  /** Cambia solo la hora de una marca puntual ya existente (mantiene su dia calendario).
+   * Deja rastro en `AuditLog` (quien, hora anterior, hora nueva, cuando) -- antes de
+   * esta correccion una correccion manual no dejaba ningun rastro (hallazgo C.4/F.7
+   * de la auditoria 2026-10-16). */
+  async updateMark(companyId: string, id: string, hhmm: string, actingUserId: string) {
     const mark = await this.prisma.timeLog.findFirst({ where: { id }, include: { user: true } });
     if (!mark || mark.user.companyId !== companyId) throw new NotFoundException(`Marca ${id} no encontrada`);
 
+    const previousLoggedAt = mark.loggedAt;
     const [hh, mm] = hhmm.split(':').map(Number);
     const newLoggedAt = new Date(mark.loggedAt);
     newLoggedAt.setHours(hh, mm, 0, 0);
@@ -402,16 +407,49 @@ export class TimeLogsService {
       throw err;
     }
 
+    await this.prisma.auditLog.create({
+      data: {
+        companyId,
+        userId: mark.userId,
+        entity: 'TimeLog',
+        entityId: id,
+        action: 'MANUAL_UPDATE',
+        diff: {
+          actingUserId,
+          logType: mark.logType,
+          previousLoggedAt: previousLoggedAt.toISOString(),
+          newLoggedAt: newLoggedAt.toISOString(),
+        },
+      },
+    });
+
     return this.noveltiesService.calculateAndPersistForDay(mark.userId, localDateKey(newLoggedAt));
   }
 
-  /** Borra una marca puntual (no el dia completo) y recalcula las novedades de su dia. */
-  async deleteMark(companyId: string, id: string) {
+  /** Borra una marca puntual (no el dia completo) y recalcula las novedades de su dia.
+   * Deja rastro en `AuditLog` (mismo hallazgo que `updateMark`). */
+  async deleteMark(companyId: string, id: string, actingUserId: string) {
     const mark = await this.prisma.timeLog.findFirst({ where: { id }, include: { user: true } });
     if (!mark || mark.user.companyId !== companyId) throw new NotFoundException(`Marca ${id} no encontrada`);
 
     const workDate = localDateKey(mark.loggedAt);
     await this.prisma.timeLog.delete({ where: { id } });
+
+    await this.prisma.auditLog.create({
+      data: {
+        companyId,
+        userId: mark.userId,
+        entity: 'TimeLog',
+        entityId: id,
+        action: 'MANUAL_DELETE',
+        diff: {
+          actingUserId,
+          logType: mark.logType,
+          deletedLoggedAt: mark.loggedAt.toISOString(),
+        },
+      },
+    });
+
     return this.noveltiesService.calculateAndPersistForDay(mark.userId, workDate);
   }
 

@@ -119,6 +119,9 @@ enum NoveltyCode {
   LIMITE_HORAS_EXTRA_EXCEDIDO
   SALIDA_NO_REGISTRADA
   JORNADA_REQUIERE_REVISION
+  // Alerta de cumplimiento: N dias calendario consecutivos trabajados sin
+  // ningun dia de descanso (Art. 160 CST, descanso semanal obligatorio).
+  SIN_DESCANSO_SEMANAL
 
   @@map("novelty_code_enum")
 }
@@ -434,6 +437,27 @@ model TimeLog {
   @@index([userId, loggedAt])
   @@map("time_logs")
 }
+
+// ADVERTENCIA (hallazgo P2 #12 de la auditoria 2026-10-16): `time_logs`
+// tiene, ademas de lo declarado arriba, un INDICE UNICO DE EXPRESION creado
+// a mano en la migracion `00000000000000_init` que Prisma NO puede expresar
+// en este DSL (una expresion sobre una columna, no una lista de columnas):
+//
+//   CREATE UNIQUE INDEX uq_time_logs_user_day_type
+//     ON time_logs (user_id, log_type, ((logged_at AT TIME ZONE 'America/Bogota')::date));
+//
+// Es la UNICA proteccion a nivel de base de datos contra una marca duplicada
+// del mismo tipo el mismo dia calendario (huso America/Bogota) para un
+// mismo usuario. Por eso NO aparece arriba como `@@unique`/`@@index`: no es
+// un descuido, es una limitacion real del DSL de Prisma con este esquema de
+// Postgres version 5.22 (confirmar si una version mas nueva ya soporta
+// indices de expresion antes de intentar declararlo aqui).
+//
+// CONSECUENCIA PRACTICA: `npx prisma migrate dev` / `migrate deploy` (que
+// aplican el historial de migraciones, incluida la que crea este indice)
+// son seguros. `npx prisma db push` NO lo es: sincroniza la base de datos
+// directamente desde este archivo, ignorando las migraciones, y BORRARIA
+// este indice sin ningun aviso. No usar `db push` en este proyecto.
 
 // =====================================================================
 // PAYROLL CONFIG (versionado por vigencia legal + ajustes operativos)

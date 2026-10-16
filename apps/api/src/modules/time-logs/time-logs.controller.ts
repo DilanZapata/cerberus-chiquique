@@ -25,6 +25,13 @@ export class TimeLogsController {
     return this.jornadaCierreService.closeOverdueOpenShifts();
   }
 
+  /** Igual, pero con la ventana larga (barrido lento) -- para pruebas/soporte sin esperar al cron diario. */
+  @Roles(UserRole.ADMIN)
+  @Post('close-stale-shifts')
+  closeStaleShifts() {
+    return this.jornadaCierreService.closeStaleOpenShifts();
+  }
+
   /** Panel: jornadas abiertas vencidas o cerradas automaticamente que requieren revision de un supervisor. */
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
   @Get('jornadas-abiertas')
@@ -135,13 +142,13 @@ export class TimeLogsController {
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
   @Put(':id')
   updateMark(@Param('id') id: string, @Body() dto: UpdateMarkDto, @CurrentUser() currentUser: AuthenticatedUser) {
-    return this.timeLogsService.updateMark(currentUser.companyId, id, dto.time);
+    return this.timeLogsService.updateMark(currentUser.companyId, id, dto.time, currentUser.id);
   }
 
   /** Borra una marca puntual (no el dia completo). */
   @Roles(UserRole.ADMIN, UserRole.HR, UserRole.SUPERVISOR)
   @Delete(':id')
   deleteMark(@Param('id') id: string, @CurrentUser() currentUser: AuthenticatedUser) {
-    return this.timeLogsService.deleteMark(currentUser.companyId, id);
+    return this.timeLogsService.deleteMark(currentUser.companyId, id, currentUser.id);
   }
 }

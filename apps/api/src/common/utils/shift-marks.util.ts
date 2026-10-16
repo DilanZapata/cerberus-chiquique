@@ -17,6 +17,17 @@ export const MARK_SEQUENCE: TimeLogType[] = [
 const DEFAULT_FINAL_EXIT_WINDOW_BEFORE_MIN = 30;
 const DEFAULT_NIGHT_SHIFT_GRACE_MIN = 240;
 
+// Margen minimo (minutos) desde el check-in antes de que el heuristico de
+// "fuera de la ventana de almuerzo = salida definitiva anticipada" (ver
+// decideForOpenShift mas abajo) pueda aplicar. Sin este margen, una segunda
+// captura a los pocos segundos/minutos del ingreso (ej. el kiosco facial
+// re-detectando el mismo rostro mientras la persona sigue en el sitio) se
+// interpretaba como la salida final del dia -- bloqueando el resto de sus
+// marcas reales de ese dia ("ya completaste las 4 marcas de hoy", sin que la
+// persona se hubiera ido). Corrige el hallazgo prioritario de la auditoria
+// de asistencia del 2026-10-16 (seccion E: causa raiz del bug "4 marcas").
+const MIN_MINUTES_SINCE_CHECK_IN_FOR_EARLY_EXIT = 60;
+
 export interface ShiftMarks {
   checkIn?: Date;
   lunchOut?: Date;
@@ -151,6 +162,24 @@ export async function findShiftMarks(prisma: PrismaService, userId: string, date
 }
 
 /**
+ * Mensaje para cuando `resolveNextMark` devuelve `null` (turno ya cerrado).
+ * El unico camino real a `null` es que `marks.checkOut` ya exista
+ * (`decideForOpenShift` linea ~187) -- pero eso puede pasar con solo 2
+ * marcas reales del dia (ej. CHECK_IN + un CHECK_OUT mal interpretado), no
+ * necesariamente las 4. El mensaje anterior ("ya completaste las 4 marcas de
+ * hoy") asumia ciegamente la secuencia completa; este describe lo que el
+ * sistema realmente sabe: la hora de la salida ya registrada. Corrige el
+ * hallazgo E / P3 #15 de la auditoria 2026-10-16.
+ */
+export function describeClosedShift(marks: ShiftMarks): string {
+  if (marks.checkOut) {
+    const time = marks.checkOut.toTimeString().slice(0, 5);
+    return `Ya se registro tu salida de hoy, a las ${time}. Si fue un error, pide a un supervisor o a RH que la corrija.`;
+  }
+  return 'Ya completaste tus marcas de hoy.';
+}
+
+/**
  * Determina la siguiente marca esperada (kiosco/app) para un empleado en el
  * instante `now`, usando el horario REAL asignado (context) en vez de
  * asumir ciegamente "el siguiente slot vacio de la secuencia".
@@ -219,7 +248,8 @@ function decideForOpenShift(
   // eso como abandono de almuerzo, no como una jornada corta legitima).
   if (!marks.lunchOut && !marks.lunchIn && marks.checkIn && lunchWindow) {
     const withinLunchWindow = isWithinLunchWindow(marks.checkIn, now, lunchWindow.start, lunchWindow.end, lunchWindow.toleranceMinutes);
-    if (!withinLunchWindow) {
+    const minutesSinceCheckIn = (now.getTime() - marks.checkIn.getTime()) / 60_000;
+    if (!withinLunchWindow && minutesSinceCheckIn >= MIN_MINUTES_SINCE_CHECK_IN_FOR_EARLY_EXIT) {
       return {
         nextLogType: TimeLogType.CHECK_OUT,
         workDate,

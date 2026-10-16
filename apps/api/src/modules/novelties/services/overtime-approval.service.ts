@@ -21,12 +21,16 @@ const OVERTIME_DETAIL_CODES: PrismaNoveltyCode[] = ['HEOD', 'HEON', 'HEFD', 'HEF
 export class OvertimeApprovalService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listPending(departmentId?: string) {
+  /** `companyId` SIEMPRE del JWT de quien consulta: antes de esta correccion
+   * este listado no filtraba por empresa en absoluto, exponiendo las
+   * solicitudes de horas extra pendientes de TODAS las empresas a cualquier
+   * supervisor/HR/admin autenticado (auditoria 2026-10-16, seccion C.1.e). */
+  async listPending(companyId: string, departmentId?: string) {
     return this.prisma.overtimeApproval.findMany({
       where: {
         status: PrismaNoveltyStatus.PENDIENTE,
         novelty: {
-          user: departmentId ? { departmentId } : undefined,
+          user: { companyId, ...(departmentId ? { departmentId } : {}) },
         },
       },
       include: {
@@ -40,9 +44,15 @@ export class OvertimeApprovalService {
     });
   }
 
-  async review(overtimeApprovalId: string, dto: ReviewNoveltyDto, reviewedById: string) {
-    const approval = await this.prisma.overtimeApproval.findUnique({
-      where: { id: overtimeApprovalId },
+  /** `companyId` SIEMPRE del JWT de quien aprueba/rechaza: sin este chequeo,
+   * cualquier supervisor/HR/admin de CUALQUIER empresa podia aprobar o
+   * rechazar horas extra de otra empresa conociendo (o adivinando, o
+   * obteniendolas del listado sin aislar de arriba) el id de la solicitud
+   * (misma auditoria, seccion C.1.e). Se responde igual que "no encontrada"
+   * para no revelar que la solicitud existe en otra empresa. */
+  async review(overtimeApprovalId: string, dto: ReviewNoveltyDto, reviewedById: string, companyId: string) {
+    const approval = await this.prisma.overtimeApproval.findFirst({
+      where: { id: overtimeApprovalId, novelty: { user: { companyId } } },
       include: { novelty: true },
     });
     if (!approval) {
