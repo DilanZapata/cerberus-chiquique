@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { login } from '@/lib/api';
 
 export default function LoginPage() {
@@ -58,6 +59,12 @@ export default function LoginPage() {
         >
           {loading ? 'Ingresando...' : 'Ingresar'}
         </button>
+
+        <p className="mt-4 text-center text-sm">
+          <Link href="/forgot-password" className="text-slate-500 underline hover:text-slate-700">
+            ¿Olvidaste tu contrasena?
+          </Link>
+        </p>
       </form>
     </main>
   );

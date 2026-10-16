@@ -60,6 +60,16 @@ export async function login(email: string, password: string): Promise<StoredUser
   return data.user;
 }
 
+// ---- Olvide mi contrasena ----
+
+export function requestPasswordResetCode(email: string): Promise<{ message: string }> {
+  return apiJson('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+}
+
+export function resetPasswordWithCode(email: string, code: string, newPassword: string): Promise<{ message: string }> {
+  return apiJson('/auth/reset-password', { method: 'POST', body: JSON.stringify({ email, code, newPassword }) });
+}
+
 // ---- Dashboard ----
 
 export interface AttendanceRow {
@@ -1004,4 +1014,32 @@ export function bootstrapCompanyMaster(
   body: BootstrapCompanyBody,
 ): Promise<{ company: { id: string; legalName: string }; admin: { id: string; email: string; employeeCode: string } }> {
   return masterJson('/master/bootstrap-company', masterPassword, { method: 'POST', body: JSON.stringify(body) });
+}
+
+export interface MasterUserResult {
+  id: string;
+  fullName: string;
+  email: string | null;
+  employeeCode: string;
+  nationalId: string;
+  role: string;
+  isActive: boolean;
+  company: { id: string; legalName: string };
+}
+
+/** Busca usuarios de CUALQUIER empresa por nombre/correo/codigo/cedula (minimo 2 caracteres). */
+export function searchUsersMaster(masterPassword: string, query: string): Promise<MasterUserResult[]> {
+  return masterJson(`/master/users?q=${encodeURIComponent(query)}`, masterPassword);
+}
+
+/** Establece una contrasena nueva para ese usuario, sin pasar por el codigo de correo. */
+export function resetUserPasswordMaster(
+  masterPassword: string,
+  userId: string,
+  newPassword: string,
+): Promise<{ success: boolean; user: { id: string; fullName: string; email: string | null } }> {
+  return masterJson(`/master/users/${userId}/reset-password`, masterPassword, {
+    method: 'POST',
+    body: JSON.stringify({ newPassword }),
+  });
 }

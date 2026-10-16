@@ -272,12 +272,34 @@ model User {
   overtimeDecisions  OvertimeApproval[]
   compensatoryRestCredits CompensatoryRestCredit[]
   faceEnrollment     FaceEnrollment?
+  passwordResetCodes PasswordResetCode[]
 
   @@unique([companyId, employeeCode])
   @@unique([companyId, nationalId])
   @@index([companyId])
   @@index([supervisorId])
   @@map("users")
+}
+
+// Codigo de un solo uso enviado por correo para restablecer la contrasena
+// ("olvide mi contrasena"). El codigo en si NUNCA se guarda en claro (mismo
+// criterio que passwordHash/pinHash): se guarda su hash bcrypt, con
+// expiracion corta y un contador de intentos fallidos para que no se pueda
+// adivinar por fuerza bruta (6 digitos = 1 millon de combinaciones; sin este
+// limite, probarlas todas antes de que expire es trivial).
+model PasswordResetCode {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  codeHash   String    @map("code_hash")
+  attempts   Int       @default(0)
+  expiresAt  DateTime  @map("expires_at")
+  usedAt     DateTime? @map("used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_codes")
 }
 
 // =====================================================================

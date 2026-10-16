@@ -2,7 +2,15 @@
 
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { bootstrapCompanyMaster, getMasterStatus, MasterStatus, resetDatabaseMaster } from '@/lib/api';
+import {
+  bootstrapCompanyMaster,
+  getMasterStatus,
+  MasterStatus,
+  MasterUserResult,
+  resetDatabaseMaster,
+  resetUserPasswordMaster,
+  searchUsersMaster,
+} from '@/lib/api';
 
 const RESET_PHRASE = 'ELIMINAR TODO';
 
@@ -26,6 +34,13 @@ export default function MasterPage() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [confirmationPhrase, setConfirmationPhrase] = useState('');
   const [resetDone, setResetDone] = useState(false);
+
+  const [userQuery, setUserQuery] = useState('');
+  const [userResults, setUserResults] = useState<MasterUserResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<MasterUserResult | null>(null);
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [resetUserDone, setResetUserDone] = useState<string | null>(null);
 
   const [bootstrapDone, setBootstrapDone] = useState<{ email: string } | null>(null);
   const [legalName, setLegalName] = useState('');
@@ -88,6 +103,39 @@ export default function MasterPage() {
       });
       setBootstrapDone({ email: result.admin.email });
       await refreshStatus(masterPassword);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSearchUsers(e: FormEvent) {
+    e.preventDefault();
+    setSearching(true);
+    setError(null);
+    setSelectedUser(null);
+    setResetUserDone(null);
+    try {
+      const results = await searchUsersMaster(masterPassword, userQuery);
+      setUserResults(results);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function handleResetUserPassword(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await resetUserPasswordMaster(masterPassword, selectedUser.id, newUserPassword);
+      setResetUserDone(selectedUser.email ?? selectedUser.employeeCode);
+      setNewUserPassword('');
+      setSelectedUser(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -194,6 +242,100 @@ export default function MasterPage() {
                     setShowResetConfirm(false);
                     setConfirmationPhrase('');
                   }}
+                  className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-900">Buscar usuario y restablecer contrasena</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Busca en TODAS las empresas por nombre, correo, codigo de empleado o cedula. Util cuando alguien no puede
+            usar el correo del flujo normal de "olvide mi contrasena".
+          </p>
+
+          {resetUserDone && (
+            <p className="mt-3 rounded-md bg-emerald-50 p-2 text-sm text-emerald-700">
+              Contrasena actualizada para {resetUserDone}.
+            </p>
+          )}
+
+          <form onSubmit={handleSearchUsers} className="mt-4 flex gap-2">
+            <input
+              required
+              minLength={2}
+              placeholder="Nombre, correo, codigo o cedula..."
+              value={userQuery}
+              onChange={(e) => setUserQuery(e.target.value)}
+              className={inputClass + ' mt-0'}
+            />
+            <button
+              type="submit"
+              disabled={searching}
+              className="shrink-0 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {searching ? 'Buscando...' : 'Buscar'}
+            </button>
+          </form>
+
+          {userResults && (
+            <ul className="mt-3 divide-y divide-slate-100 rounded-md border border-slate-200">
+              {userResults.length === 0 && <li className="p-3 text-sm text-slate-500">Sin resultados.</li>}
+              {userResults.map((u) => (
+                <li key={u.id} className="flex items-center justify-between gap-3 p-3 text-sm">
+                  <div>
+                    <div className="font-medium text-slate-900">
+                      {u.fullName} {!u.isActive && <span className="text-xs text-red-600">(inactivo)</span>}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {u.email ?? 'sin correo'} · {u.employeeCode} · {u.company.legalName}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedUser(u);
+                      setResetUserDone(null);
+                    }}
+                    className="shrink-0 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Restablecer contrasena
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {selectedUser && (
+            <form onSubmit={handleResetUserPassword} className="mt-4 space-y-2 rounded-md bg-slate-50 p-4">
+              <p className="text-sm text-slate-700">
+                Nueva contrasena para <span className="font-semibold">{selectedUser.fullName}</span> (
+                {selectedUser.email ?? selectedUser.employeeCode})
+              </p>
+              <input
+                type="password"
+                required
+                minLength={4}
+                autoFocus
+                value={newUserPassword}
+                onChange={(e) => setNewUserPassword(e.target.value)}
+                className={inputClass}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {loading ? 'Guardando...' : 'Confirmar'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedUser(null)}
                   className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700"
                 >
                   Cancelar
