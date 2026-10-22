@@ -8,6 +8,7 @@ export class KioskClockDto {
   @IsLongitude()
   longitude!: number;
 
+  /** Codigo de empleado O cedula (nationalId) -- el servicio prueba ambos. */
   @IsString()
   employeeCode!: string;
 

@@ -60,13 +60,16 @@ const STATUS_LABEL: Record<KioskState, string> = {
 };
 
 /**
- * Modo Kiosco: pantalla principal de la app (terminal fija compartida). La
- * camara analiza continuamente buscando un rostro (sondeo periodico contra
- * `/kiosk/face-probe`, que solo identifica sin registrar nada) y, cuando
- * detecta la MISMA persona de forma estable durante `STABILITY_THRESHOLD`
- * sondeos seguidos, captura automaticamente y registra la marca real via
- * `/kiosk/face-clock` (sujeto al guard de duplicados de 5 minutos del
- * backend). El PIN queda como respaldo secundario, y el login personal
+ * Modo Kiosco: pantalla principal de la app (terminal fija compartida,
+ * pensada para operarse en una tablet). Por defecto se abre en modo
+ * identificador+PIN: la persona ve claramente su propia camara en un
+ * recuadro cuadrado grande (para confirmar que la foto de evidencia va a
+ * salir bien antes de tomarla), digita su CEDULA O SU CODIGO DE EMPLEADO
+ * (el backend acepta cualquiera de los dos, ver kiosk.service.ts) + su PIN,
+ * y registra -- la foto se toma en ese momento como evidencia, sin
+ * necesidad de reconocer a nadie. El reconocimiento facial automatico
+ * (sondeo periodico contra `/kiosk/face-probe` y captura sola al detectar
+ * estabilidad) sigue disponible como modo alternativo, y el login personal
  * como boton discreto en la esquina.
  */
 export default function KioskScreen({ navigation }: Props) {
@@ -80,7 +83,7 @@ export default function KioskScreen({ navigation }: Props) {
   const [resultTone, setResultTone] = useState<ResultTone | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
-  const [showPinMode, setShowPinMode] = useState(false);
+  const [showPinMode, setShowPinMode] = useState(true);
 
   // Todo lo que decide el flujo (no solo lo visual) vive en refs: un
   // candado de proceso real que se revisa ANTES de disparar cualquier
@@ -96,6 +99,17 @@ export default function KioskScreen({ navigation }: Props) {
   useEffect(() => {
     isFocusedRef.current = isFocused;
   }, [isFocused]);
+
+  // Se pide el permiso de camara de una vez al abrir, sin esperar a que la
+  // persona entre al modo reconocimiento facial -- el modo PIN (ahora el
+  // que se ve primero) tambien necesita la camara para el recuadro de
+  // evidencia, y no tiene su propio boton de "permitir camara".
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      requestPermission();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [permission?.granted, permission?.canAskAgain]);
 
   function clearAllTimers() {
     if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
@@ -297,24 +311,40 @@ export default function KioskScreen({ navigation }: Props) {
 
   // ---- Render ----
 
-  if (showPinMode) {
-    return (
-      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
-        <ScrollView contentContainerStyle={styles.pinContainer}>
-          <TouchableOpacity style={styles.backLink} onPress={() => setShowPinMode(false)}>
-            <Text style={styles.backLinkText}>‹ Volver al reconocimiento facial</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>Marcar con codigo y PIN</Text>
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
+      <TouchableOpacity style={styles.loginCorner} onPress={() => navigation.navigate('Login')}>
+        <Text style={styles.loginCornerText}>Iniciar sesion</Text>
+      </TouchableOpacity>
 
-          {permission?.granted && (
-            <View style={styles.cameraBoxSmall}>
-              <CameraView ref={cameraRef} style={styles.camera} facing="front" />
+      {!showPinMode && (
+        <TouchableOpacity style={styles.backCorner} onPress={() => setShowPinMode(true)}>
+          <Text style={styles.backCornerText}>‹ Codigo y PIN</Text>
+        </TouchableOpacity>
+      )}
+
+      {showPinMode ? (
+        <ScrollView contentContainerStyle={styles.pinContainer}>
+          <Text style={styles.title}>Cerberus</Text>
+          <Text style={styles.subtitle}>Digita tu cedula o tu codigo, y tu PIN, para marcar tu asistencia</Text>
+
+          {permission?.granted ? (
+            <View style={styles.cameraBoxSquare}>
+              {isFocused && <CameraView ref={cameraRef} style={styles.camera} facing="front" />}
+            </View>
+          ) : (
+            <View style={[styles.cameraBoxSquare, styles.cameraBoxPlaceholder]}>
+              <Text style={styles.cameraPlaceholderText}>Se necesita la camara para la foto de evidencia</Text>
+              <TouchableOpacity style={styles.submitSmall} onPress={requestPermission}>
+                <Text style={styles.submitText}>Permitir camara</Text>
+              </TouchableOpacity>
             </View>
           )}
+          <Text style={styles.cameraHint}>Ubicate frente a la camara: asi saldra la foto de tu registro.</Text>
 
           <TextInput
             style={styles.input}
-            placeholder="Codigo de empleado"
+            placeholder="Cedula o codigo de empleado"
             value={employeeCode}
             onChangeText={setEmployeeCode}
             autoCapitalize="characters"
@@ -337,69 +367,61 @@ export default function KioskScreen({ navigation }: Props) {
           {pinMessage && <Text style={styles.success}>{pinMessage}</Text>}
 
           <TouchableOpacity style={styles.submit} onPress={submitPin} disabled={pinLoading || !employeeCode || !pin}>
-            {pinLoading ? <ActivityIndicator color="white" /> : <Text style={styles.submitText}>Marcar</Text>}
+            {pinLoading ? <ActivityIndicator color="white" /> : <Text style={styles.submitText}>Registrar</Text>}
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.pinLink} onPress={() => setShowPinMode(false)}>
+            <Text style={styles.pinLinkText}>Usar reconocimiento facial</Text>
           </TouchableOpacity>
         </ScrollView>
-      </SafeAreaView>
-    );
-  }
+      ) : (
+        <View style={styles.faceContainer}>
+          <Text style={styles.title}>Cerberus</Text>
+          <Text style={styles.subtitle}>Ubicate frente a la camara para marcar tu asistencia</Text>
 
-  return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
-      <TouchableOpacity style={styles.loginCorner} onPress={() => navigation.navigate('Login')}>
-        <Text style={styles.loginCornerText}>Iniciar sesion</Text>
-      </TouchableOpacity>
-
-      <View style={styles.faceContainer}>
-        <Text style={styles.title}>Cerberus</Text>
-        <Text style={styles.subtitle}>Ubicate frente a la camara para marcar tu asistencia</Text>
-
-        {!permission?.granted ? (
-          <TouchableOpacity style={styles.submit} onPress={requestPermission}>
-            <Text style={styles.submitText}>Permitir uso de la camara</Text>
-          </TouchableOpacity>
-        ) : locationError ? (
-          <View style={styles.errorBox}>
-            <Text style={styles.error}>{locationError}</Text>
-            <TouchableOpacity style={styles.submit} onPress={initialize}>
-              <Text style={styles.submitText}>Reintentar</Text>
+          {!permission?.granted ? (
+            <TouchableOpacity style={styles.submit} onPress={requestPermission}>
+              <Text style={styles.submitText}>Permitir uso de la camara</Text>
             </TouchableOpacity>
-          </View>
-        ) : (
-          <>
-            <View style={[styles.cameraBox, { borderColor: FRAME_COLOR[kioskState] }]}>
-              {isFocused && <CameraView ref={cameraRef} style={styles.camera} facing="front" />}
+          ) : locationError ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.error}>{locationError}</Text>
+              <TouchableOpacity style={styles.submit} onPress={initialize}>
+                <Text style={styles.submitText}>Reintentar</Text>
+              </TouchableOpacity>
             </View>
+          ) : (
+            <>
+              <View style={[styles.cameraBox, { borderColor: FRAME_COLOR[kioskState] }]}>
+                {isFocused && <CameraView ref={cameraRef} style={styles.camera} facing="front" />}
+              </View>
 
-            <Text style={styles.statusLabel}>{STATUS_LABEL[kioskState]}</Text>
-            {statusDetail && kioskState === 'DETECTING' && <Text style={styles.statusDetail}>{statusDetail}</Text>}
-            {resultMessage && (
-              <Text
-                style={[
-                  styles.resultText,
-                  resultTone === 'success' && styles.success,
-                  resultTone === 'warning' && styles.warning,
-                  resultTone === 'error' && styles.error,
-                ]}
-              >
-                {resultMessage}
-              </Text>
-            )}
-
-            <TouchableOpacity style={[styles.submit, isProcessing && styles.submitDisabled]} onPress={handleManualCapture} disabled={isProcessing}>
-              {kioskState === 'CAPTURING' || kioskState === 'PROCESSING' ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Text style={styles.submitText}>Capturar manualmente</Text>
+              <Text style={styles.statusLabel}>{STATUS_LABEL[kioskState]}</Text>
+              {statusDetail && kioskState === 'DETECTING' && <Text style={styles.statusDetail}>{statusDetail}</Text>}
+              {resultMessage && (
+                <Text
+                  style={[
+                    styles.resultText,
+                    resultTone === 'success' && styles.success,
+                    resultTone === 'warning' && styles.warning,
+                    resultTone === 'error' && styles.error,
+                  ]}
+                >
+                  {resultMessage}
+                </Text>
               )}
-            </TouchableOpacity>
-          </>
-        )}
 
-        <TouchableOpacity style={styles.pinLink} onPress={() => setShowPinMode(true)}>
-          <Text style={styles.pinLinkText}>Usar codigo y PIN</Text>
-        </TouchableOpacity>
-      </View>
+              <TouchableOpacity style={[styles.submit, isProcessing && styles.submitDisabled]} onPress={handleManualCapture} disabled={isProcessing}>
+                {kioskState === 'CAPTURING' || kioskState === 'PROCESSING' ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text style={styles.submitText}>Capturar manualmente</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -411,17 +433,39 @@ const styles = StyleSheet.create({
     top: 12,
     right: 16,
     zIndex: 10,
+    // El preview de CameraView en Android es un SurfaceView nativo: compone
+    // en una capa aparte que ignora el zIndex de RN, asi que un boton
+    // superpuesto puede quedar visualmente encima pero sin recibir toques
+    // (la camara "se los come"). `elevation` fuerza a Android a promover
+    // esta vista a su propia capa de hardware, que si respeta el orden
+    // frente al SurfaceView.
+    elevation: 10,
     backgroundColor: '#f1f5f9',
     borderRadius: 20,
     paddingVertical: 6,
     paddingHorizontal: 14,
   },
   loginCornerText: { color: '#334155', fontWeight: '600', fontSize: 12 },
+  backCorner: {
+    position: 'absolute',
+    top: 12,
+    left: 16,
+    zIndex: 10,
+    elevation: 10,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 20,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+  },
+  backCornerText: { color: '#334155', fontWeight: '600', fontSize: 12 },
   faceContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 8 },
   title: { fontSize: 22, fontWeight: '700' },
   subtitle: { fontSize: 13, color: '#475569', textAlign: 'center', marginBottom: 8 },
   cameraBox: { width: 260, height: 260, borderRadius: 130, overflow: 'hidden', backgroundColor: '#000', borderWidth: 4 },
-  cameraBoxSmall: { width: 90, height: 90, borderRadius: 45, overflow: 'hidden', backgroundColor: '#000' },
+  cameraBoxSquare: { width: 260, height: 260, borderRadius: 16, overflow: 'hidden', backgroundColor: '#000' },
+  cameraBoxPlaceholder: { alignItems: 'center', justifyContent: 'center', gap: 10, padding: 16 },
+  cameraPlaceholderText: { color: '#cbd5e1', fontSize: 12, textAlign: 'center' },
+  cameraHint: { fontSize: 11, color: '#94a3b8', textAlign: 'center', marginTop: 6 },
   camera: { width: '100%', height: '100%' },
   statusLabel: { fontSize: 16, fontWeight: '700', color: '#0f172a', marginTop: 12 },
   statusDetail: { fontSize: 12, color: '#475569', textAlign: 'center' },
@@ -431,14 +475,13 @@ const styles = StyleSheet.create({
   warning: { color: '#b45309', textAlign: 'center' },
   success: { color: '#047857', textAlign: 'center' },
   submit: { marginTop: 12, backgroundColor: '#0f172a', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 8 },
+  submitSmall: { backgroundColor: '#0f172a', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8 },
   submitDisabled: { backgroundColor: '#94a3b8' },
   submitText: { color: 'white', fontWeight: '700', fontSize: 16 },
   pinLink: { marginTop: 20, padding: 8 },
   pinLinkText: { color: '#64748b', fontSize: 12, textDecorationLine: 'underline' },
   // ---- Modo PIN ----
-  pinContainer: { flexGrow: 1, alignItems: 'center', padding: 24, gap: 10 },
-  backLink: { alignSelf: 'flex-start' },
-  backLinkText: { color: '#0f172a', fontWeight: '600', fontSize: 15 },
+  pinContainer: { flexGrow: 1, alignItems: 'center', padding: 24, paddingTop: 48, gap: 10 },
   input: { width: '100%', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 8, padding: 10, fontSize: 14 },
   pinDisplay: { fontSize: 28, letterSpacing: 8, marginVertical: 8 },
   keypad: { flexDirection: 'row', flexWrap: 'wrap', width: 240, justifyContent: 'center' },

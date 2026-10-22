@@ -310,7 +310,7 @@ export default function KioskFacialPage() {
           >
             &lsaquo; Volver al reconocimiento facial
           </button>
-          <h1 className="text-lg font-bold text-ink">Marcar con codigo y PIN</h1>
+          <h1 className="text-lg font-bold text-ink">Marcar con cedula o codigo, y PIN</h1>
 
           {cameraReady && (
             <div className="mx-auto mt-4 h-24 w-24 overflow-hidden rounded-full bg-black">
@@ -321,7 +321,7 @@ export default function KioskFacialPage() {
           <input
             value={employeeCode}
             onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())}
-            placeholder="Codigo de empleado"
+            placeholder="Cedula o codigo de empleado"
             className="mt-6 w-full rounded-lg border border-line-axis bg-surface-card px-3 py-2.5 text-sm text-ink placeholder:text-ink-muted focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100"
           />
           <p className="mt-4 text-center text-3xl tracking-[0.5em] text-ink">{'•'.repeat(pin.length) || 'PIN'}</p>
@@ -349,7 +349,7 @@ export default function KioskFacialPage() {
             disabled={pinLoading || !employeeCode || !pin}
             className="mt-5 w-full rounded-lg bg-ink py-3.5 text-sm font-bold text-white disabled:opacity-50"
           >
-            {pinLoading ? 'Marcando...' : 'Marcar'}
+            {pinLoading ? 'Registrando...' : 'Registrar'}
           </button>
         </div>
       </main>

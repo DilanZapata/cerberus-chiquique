@@ -39,7 +39,14 @@ export class KioskService {
     });
   }
 
-  /** Marca la siguiente entrada/salida esperada del empleado, identificado por codigo + PIN. */
+  /**
+   * Marca la siguiente entrada/salida esperada del empleado, identificado
+   * por PIN + un identificador que puede ser SU CODIGO DE EMPLEADO O SU
+   * CEDULA (`dto.employeeCode` acepta cualquiera de los dos) -- en la
+   * practica, muchas personas recuerdan su cedula pero no un codigo interno
+   * arbitrario, asi que el kiosco debe reconocer ambos sin que la persona
+   * tenga que saber cual de los dos esta usando.
+   */
   async clock(dto: KioskClockDto) {
     const nearbySites = await this.findNearbyWorkSites(dto.latitude, dto.longitude);
     if (nearbySites.length === 0) {
@@ -50,7 +57,11 @@ export class KioskService {
     const companyIds = [...new Set(nearbySites.map((s) => s.companyId))];
 
     const user = await this.prisma.user.findFirst({
-      where: { employeeCode: dto.employeeCode, companyId: { in: companyIds }, isActive: true },
+      where: {
+        OR: [{ employeeCode: dto.employeeCode }, { nationalId: dto.employeeCode }],
+        companyId: { in: companyIds },
+        isActive: true,
+      },
     });
     if (!user || !user.pinHash) {
       throw new UnauthorizedException('Empleado o PIN invalido');
