@@ -845,12 +845,11 @@ export function kioskFaceProbe(latitude: number, longitude: number, imageBase64:
   return kioskFetch('/kiosk/face-probe', { latitude, longitude, imageBase64 });
 }
 
-/** Modo de respaldo: identifica al empleado por codigo + PIN en vez de reconocimiento facial. */
+/** Modo de respaldo: identifica al empleado por UN solo valor (cedula, codigo, o PIN) en vez de reconocimiento facial. */
 export function kioskClock(params: {
   latitude: number;
   longitude: number;
-  employeeCode: string;
-  pin: string;
+  identifier: string;
   imageBase64?: string;
 }): Promise<KioskFaceClockResult> {
   return kioskFetch('/kiosk/clock', params);

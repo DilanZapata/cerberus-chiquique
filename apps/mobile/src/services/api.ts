@@ -63,13 +63,12 @@ export interface KioskClockResult {
 /**
  * Modo Kiosco: sin token ni sede configurados en el dispositivo. El backend
  * identifica la sede (y la empresa) por proximidad GPS del propio telefono;
- * el empleado se identifica con su codigo + PIN.
+ * el empleado se identifica con UN solo valor (cedula, codigo, o PIN).
  */
 export async function kioskClock(params: {
   latitude: number;
   longitude: number;
-  employeeCode: string;
-  pin: string;
+  identifier: string;
   imageBase64?: string;
 }): Promise<KioskClockResult> {
   const res = await fetchWithTimeout(
@@ -288,6 +287,24 @@ export interface AttendanceRow {
 
 export function getAttendance(token: string, date: string): Promise<AttendanceRow[]> {
   return apiRequest(token, `/dashboard/attendance?date=${date}`);
+}
+
+// ---- Horas extra (mismo endpoint que ya usa el panel web) ----
+
+export interface PendingOvertime {
+  id: string;
+  requestedHours: string;
+  status: string;
+  createdAt: string;
+  novelty: { workDate: string; hours: string; notes: string | null; user: { fullName: string; employeeCode: string } };
+}
+
+export function getPendingOvertime(token: string): Promise<PendingOvertime[]> {
+  return apiRequest(token, '/novelties/overtime/pending');
+}
+
+export function reviewOvertime(token: string, id: string, body: { status: 'APROBADA' | 'RECHAZADA'; approvedHours?: number; notes?: string }) {
+  return apiRequest(token, `/novelties/overtime/${id}/review`, { method: 'POST', body: JSON.stringify(body) });
 }
 
 // ---- Historial de marcas (coordenadas + foto de evidencia) ----

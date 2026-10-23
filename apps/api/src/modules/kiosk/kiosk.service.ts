@@ -40,12 +40,48 @@ export class KioskService {
   }
 
   /**
+   * Identifica al empleado por UN solo valor que puede ser su cedula, su
+   * codigo de empleado, O su PIN. Primero intenta el match exacto y barato
+   * (cedula/codigo); solo si no encuentra nada ahi, compara el valor contra
+   * el PIN de cada candidato con PIN configurado (un hash bcrypt no se
+   * puede buscar por indice, hay que probarlo uno por uno contra cada
+   * candidato de las sedes cercanas -- aceptable para el tamano tipico de
+   * una sola sede, no para miles de empleados).
+   *
+   * Nada impide que dos personas elijan el mismo PIN (no es unico en el
+   * esquema, a diferencia de employeeCode/nationalId): si el valor
+   * coincide con el PIN de MAS DE UN empleado, no hay forma de saber cual
+   * de los dos es sin adivinar -- se rechaza explicitamente en vez de
+   * marcarle la asistencia a la persona equivocada.
+   */
+  private async identifyByCodeOrPin(identifier: string, companyIds: string[]): Promise<User | null> {
+    const byCode = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ employeeCode: identifier }, { nationalId: identifier }],
+        companyId: { in: companyIds },
+        isActive: true,
+      },
+    });
+    if (byCode) return byCode;
+
+    const candidates = await this.prisma.user.findMany({
+      where: { companyId: { in: companyIds }, isActive: true, pinHash: { not: null } },
+    });
+    const matches: User[] = [];
+    for (const candidate of candidates) {
+      if (await bcrypt.compare(identifier, candidate.pinHash!)) matches.push(candidate);
+    }
+    if (matches.length > 1) {
+      throw new UnauthorizedException('Ese PIN coincide con mas de un empleado; marca con tu cedula o codigo en su lugar.');
+    }
+    return matches[0] ?? null;
+  }
+
+  /**
    * Marca la siguiente entrada/salida esperada del empleado, identificado
-   * por PIN + un identificador que puede ser SU CODIGO DE EMPLEADO O SU
-   * CEDULA (`dto.employeeCode` acepta cualquiera de los dos) -- en la
-   * practica, muchas personas recuerdan su cedula pero no un codigo interno
-   * arbitrario, asi que el kiosco debe reconocer ambos sin que la persona
-   * tenga que saber cual de los dos esta usando.
+   * por UN SOLO VALOR que puede ser su CEDULA, su CODIGO DE EMPLEADO, O su
+   * PIN -- a peticion explicita: ya no se exige cedula/codigo + PIN juntos,
+   * cualquiera de los tres por si solo identifica y marca.
    */
   async clock(dto: KioskClockDto) {
     const nearbySites = await this.findNearbyWorkSites(dto.latitude, dto.longitude);
@@ -56,20 +92,9 @@ export class KioskService {
     }
     const companyIds = [...new Set(nearbySites.map((s) => s.companyId))];
 
-    const user = await this.prisma.user.findFirst({
-      where: {
-        OR: [{ employeeCode: dto.employeeCode }, { nationalId: dto.employeeCode }],
-        companyId: { in: companyIds },
-        isActive: true,
-      },
-    });
-    if (!user || !user.pinHash) {
-      throw new UnauthorizedException('Empleado o PIN invalido');
-    }
-
-    const pinMatches = await bcrypt.compare(dto.pin, user.pinHash);
-    if (!pinMatches) {
-      throw new UnauthorizedException('Empleado o PIN invalido');
+    const user = await this.identifyByCodeOrPin(dto.identifier, companyIds);
+    if (!user) {
+      throw new UnauthorizedException('No se encontro ningun empleado con esa cedula, codigo o PIN.');
     }
 
     const workSite = nearbySites.find((s) => s.companyId === user.companyId)!;

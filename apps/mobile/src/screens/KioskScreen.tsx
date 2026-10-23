@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import * as Location from 'expo-location';
@@ -62,12 +72,13 @@ const STATUS_LABEL: Record<KioskState, string> = {
 /**
  * Modo Kiosco: pantalla principal de la app (terminal fija compartida,
  * pensada para operarse en una tablet). Por defecto se abre en modo
- * identificador+PIN: la persona ve claramente su propia camara en un
- * recuadro cuadrado grande (para confirmar que la foto de evidencia va a
- * salir bien antes de tomarla), digita su CEDULA O SU CODIGO DE EMPLEADO
- * (el backend acepta cualquiera de los dos, ver kiosk.service.ts) + su PIN,
- * y registra -- la foto se toma en ese momento como evidencia, sin
- * necesidad de reconocer a nadie. El reconocimiento facial automatico
+ * identificador: la persona ve claramente su propia camara en un recuadro
+ * cuadrado grande (para confirmar que la foto de evidencia va a salir bien
+ * antes de tomarla), digita UN SOLO VALOR -- su CEDULA, su CODIGO DE
+ * EMPLEADO, O su PIN, cualquiera de los tres (el backend prueba los tres,
+ * ver KioskService.identifyByCodeOrPin) -- y registra; la foto se toma en
+ * ese momento como evidencia, sin necesidad de reconocer a nadie. El
+ * reconocimiento facial automatico
  * (sondeo periodico contra `/kiosk/face-probe` y captura sola al detectar
  * estabilidad) sigue disponible como modo alternativo, y el login personal
  * como boton discreto en la esquina.
@@ -76,6 +87,14 @@ export default function KioskScreen({ navigation }: Props) {
   const isFocused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
+
+  // Todo en modo codigo/PIN debe caber en una sola pantalla, SIN scroll, en
+  // cualquier dispositivo (telefono chico o tablet) -- por eso el tamano de
+  // la camara se calcula en proporcion a la pantalla real en vez de usar un
+  // valor fijo pensado solo para tablet.
+  const { height: screenHeight, width: screenWidth } = useWindowDimensions();
+  const isCompact = screenHeight < 700;
+  const pinCameraSize = Math.round(Math.min(screenHeight * (isCompact ? 0.16 : 0.22), screenWidth * 0.4, 150));
 
   const [kioskState, setKioskState] = useState<KioskState>('INITIALIZING');
   const [statusDetail, setStatusDetail] = useState<string | null>(null);
@@ -276,16 +295,13 @@ export default function KioskScreen({ navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFocused, permission?.granted, showPinMode]);
 
-  // ---- Modo PIN (respaldo) ----
-  const [employeeCode, setEmployeeCode] = useState('');
-  const [pin, setPin] = useState('');
+  // ---- Modo codigo/PIN (respaldo): UN solo campo -- cedula, codigo de
+  // empleado, O PIN, cualquiera de los tres identifica (a peticion
+  // explicita, ya no se exige cedula/codigo + PIN juntos). ----
+  const [identifier, setIdentifier] = useState('');
   const [pinMessage, setPinMessage] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinLoading, setPinLoading] = useState(false);
-
-  function pressDigit(digit: string) {
-    if (pin.length < 6) setPin(pin + digit);
-  }
 
   async function submitPin() {
     setPinLoading(true);
@@ -298,10 +314,9 @@ export default function KioskScreen({ navigation }: Props) {
         const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
         if (photo?.base64) imageBase64 = `data:image/jpeg;base64,${photo.base64}`;
       }
-      const result = await kioskClock({ ...coords, employeeCode, pin, imageBase64 });
+      const result = await kioskClock({ ...coords, identifier, imageBase64 });
       setPinMessage(`${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString()}`);
-      setEmployeeCode('');
-      setPin('');
+      setIdentifier('');
     } catch (err) {
       setPinError((err as Error).message);
     } finally {
@@ -324,56 +339,70 @@ export default function KioskScreen({ navigation }: Props) {
       )}
 
       {showPinMode ? (
-        <ScrollView contentContainerStyle={styles.pinContainer}>
-          <Text style={styles.title}>Cerberus</Text>
-          <Text style={styles.subtitle}>Digita tu cedula o tu codigo, y tu PIN, para marcar tu asistencia</Text>
+        <KeyboardAvoidingView
+          style={styles.pinContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+        >
+          <View style={styles.pinHeader}>
+            <Text style={styles.titleCompact}>Cerberus</Text>
+            <Text style={styles.subtitleCompact}>Digita tu cedula, tu codigo o tu PIN para marcar tu asistencia</Text>
+          </View>
 
           {permission?.granted ? (
-            <View style={styles.cameraBoxSquare}>
+            <View style={[styles.cameraBoxSquare, { width: pinCameraSize, height: pinCameraSize }]}>
               {isFocused && <CameraView ref={cameraRef} style={styles.camera} facing="front" />}
             </View>
           ) : (
-            <View style={[styles.cameraBoxSquare, styles.cameraBoxPlaceholder]}>
-              <Text style={styles.cameraPlaceholderText}>Se necesita la camara para la foto de evidencia</Text>
+            <View style={[styles.cameraBoxSquare, styles.cameraBoxPlaceholder, { width: pinCameraSize, height: pinCameraSize }]}>
+              <Text style={styles.cameraPlaceholderText}>Se necesita la camara</Text>
               <TouchableOpacity style={styles.submitSmall} onPress={requestPermission}>
-                <Text style={styles.submitText}>Permitir camara</Text>
+                <Text style={styles.submitText}>Permitir</Text>
               </TouchableOpacity>
             </View>
           )}
-          <Text style={styles.cameraHint}>Ubicate frente a la camara: asi saldra la foto de tu registro.</Text>
 
-          <TextInput
-            style={styles.input}
-            placeholder="Cedula o codigo de empleado"
-            value={employeeCode}
-            onChangeText={setEmployeeCode}
-            autoCapitalize="characters"
-          />
-          <Text style={styles.pinDisplay}>{'•'.repeat(pin.length) || 'PIN'}</Text>
-          <View style={styles.keypad}>
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'].map((key, i) => (
-              <TouchableOpacity
-                key={i}
-                style={styles.key}
-                disabled={!key}
-                onPress={() => (key === '⌫' ? setPin(pin.slice(0, -1)) : pressDigit(key))}
-              >
-                <Text style={styles.keyText}>{key}</Text>
-              </TouchableOpacity>
-            ))}
+          <View style={styles.pinFormColumn}>
+            <View>
+              <Text style={styles.fieldLabel}>Cedula, codigo de empleado o PIN</Text>
+              <TextInput
+                style={styles.inputCompact}
+                placeholder="Digita cualquiera de los 3"
+                placeholderTextColor="#94a3b8"
+                value={identifier}
+                onChangeText={setIdentifier}
+                autoCapitalize="characters"
+                returnKeyType="done"
+                onSubmitEditing={submitPin}
+              />
+            </View>
           </View>
 
-          {pinError && <Text style={styles.error}>{pinError}</Text>}
-          {pinMessage && <Text style={styles.success}>{pinMessage}</Text>}
+          <View style={styles.pinFooter}>
+            {pinError && (
+              <Text style={styles.error} numberOfLines={2}>
+                {pinError}
+              </Text>
+            )}
+            {pinMessage && (
+              <Text style={styles.success} numberOfLines={2}>
+                {pinMessage}
+              </Text>
+            )}
 
-          <TouchableOpacity style={styles.submit} onPress={submitPin} disabled={pinLoading || !employeeCode || !pin}>
-            {pinLoading ? <ActivityIndicator color="white" /> : <Text style={styles.submitText}>Registrar</Text>}
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.submitCompact}
+              onPress={submitPin}
+              disabled={pinLoading || !identifier}
+            >
+              {pinLoading ? <ActivityIndicator color="white" /> : <Text style={styles.submitText}>Registrar</Text>}
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.pinLink} onPress={() => setShowPinMode(false)}>
-            <Text style={styles.pinLinkText}>Usar reconocimiento facial</Text>
-          </TouchableOpacity>
-        </ScrollView>
+            <TouchableOpacity style={styles.pinLink} onPress={() => setShowPinMode(false)}>
+              <Text style={styles.pinLinkText}>Usar reconocimiento facial</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
       ) : (
         <View style={styles.faceContainer}>
           <Text style={styles.title}>Cerberus</Text>
@@ -478,13 +507,36 @@ const styles = StyleSheet.create({
   submitSmall: { backgroundColor: '#0f172a', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8 },
   submitDisabled: { backgroundColor: '#94a3b8' },
   submitText: { color: 'white', fontWeight: '700', fontSize: 16 },
-  pinLink: { marginTop: 20, padding: 8 },
-  pinLinkText: { color: '#64748b', fontSize: 12, textDecorationLine: 'underline' },
-  // ---- Modo PIN ----
-  pinContainer: { flexGrow: 1, alignItems: 'center', padding: 24, paddingTop: 48, gap: 10 },
-  input: { width: '100%', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 8, padding: 10, fontSize: 14 },
-  pinDisplay: { fontSize: 28, letterSpacing: 8, marginVertical: 8 },
-  keypad: { flexDirection: 'row', flexWrap: 'wrap', width: 240, justifyContent: 'center' },
-  key: { width: 72, height: 56, alignItems: 'center', justifyContent: 'center' },
-  keyText: { fontSize: 22, fontWeight: '600' },
+  pinLink: { marginTop: 4, padding: 4 },
+  pinLinkText: { color: '#64748b', fontSize: 11, textDecorationLine: 'underline' },
+  // ---- Modo codigo/PIN: TODO debe caber en una sola pantalla, sin scroll
+  // -- por eso el contenedor reparte el espacio disponible con
+  // `justifyContent: 'space-evenly'` en vez de apilar con margenes fijos
+  // (que es lo que obligaba a hacer scroll en pantallas chicas). ----
+  pinContainer: { flex: 1, alignItems: 'center', justifyContent: 'space-evenly', paddingHorizontal: 20, paddingVertical: 10 },
+  pinHeader: { alignItems: 'center', gap: 2 },
+  titleCompact: { fontSize: 18, fontWeight: '700' },
+  subtitleCompact: { fontSize: 11, color: '#475569', textAlign: 'center', paddingHorizontal: 8 },
+  // Campos de texto REALES (no un teclado numerico propio): asi el usuario
+  // usa el teclado nativo del telefono, que ya conoce, en vez de un control
+  // a medida que puede no quedar claro que se puede tocar.
+  pinFormColumn: { width: '100%', gap: 8 },
+  fieldLabel: { fontSize: 11, color: '#64748b', marginBottom: 2, fontWeight: '600' },
+  inputCompact: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    fontSize: 15,
+    backgroundColor: '#fff',
+    // Fijo a propósito: la app sigue el tema del sistema
+    // (userInterfaceStyle "automatic" en app.json), y sin esto el texto
+    // escrito hereda el color claro del modo oscuro -- casi invisible
+    // sobre el fondo blanco del campo.
+    color: '#0f172a',
+  },
+  pinFooter: { alignItems: 'center', gap: 4, width: '100%' },
+  submitCompact: { backgroundColor: '#0f172a', paddingVertical: 10, paddingHorizontal: 28, borderRadius: 8 },
 });

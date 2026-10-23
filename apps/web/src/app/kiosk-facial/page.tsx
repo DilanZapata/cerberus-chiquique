@@ -268,16 +268,12 @@ export default function KioskFacialPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageVisible, cameraReady, showPinMode]);
 
-  // ---- Modo PIN (respaldo) ----
-  const [employeeCode, setEmployeeCode] = useState('');
-  const [pin, setPin] = useState('');
+  // ---- Modo codigo/PIN (respaldo): UN solo campo -- cedula, codigo de
+  // empleado, O PIN, cualquiera de los tres identifica. ----
+  const [identifier, setIdentifier] = useState('');
   const [pinMessage, setPinMessage] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinLoading, setPinLoading] = useState(false);
-
-  function pressDigit(digit: string) {
-    if (pin.length < 6) setPin(pin + digit);
-  }
 
   async function submitPin() {
     setPinLoading(true);
@@ -286,10 +282,9 @@ export default function KioskFacialPage() {
     try {
       const coords = await getCurrentCoords();
       const photo = cameraReady ? capturePhoto(0.5) : null;
-      const result = await kioskClock({ ...coords, employeeCode, pin, imageBase64: photo ?? undefined });
+      const result = await kioskClock({ ...coords, identifier, imageBase64: photo ?? undefined });
       setPinMessage(`${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString()}`);
-      setEmployeeCode('');
-      setPin('');
+      setIdentifier('');
     } catch (err) {
       setPinError((err as Error).message);
     } finally {
@@ -310,7 +305,7 @@ export default function KioskFacialPage() {
           >
             &lsaquo; Volver al reconocimiento facial
           </button>
-          <h1 className="text-lg font-bold text-ink">Marcar con cedula o codigo, y PIN</h1>
+          <h1 className="text-lg font-bold text-ink">Marcar con cedula, codigo o PIN</h1>
 
           {cameraReady && (
             <div className="mx-auto mt-4 h-24 w-24 overflow-hidden rounded-full bg-black">
@@ -318,27 +313,14 @@ export default function KioskFacialPage() {
             </div>
           )}
 
+          <label className="mt-6 block text-xs font-semibold text-ink-muted">Cedula, codigo de empleado o PIN</label>
           <input
-            value={employeeCode}
-            onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())}
-            placeholder="Cedula o codigo de empleado"
-            className="mt-6 w-full rounded-lg border border-line-axis bg-surface-card px-3 py-2.5 text-sm text-ink placeholder:text-ink-muted focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value.toUpperCase())}
+            placeholder="Digita cualquiera de los 3"
+            onKeyDown={(e) => e.key === 'Enter' && submitPin()}
+            className="mt-1 w-full rounded-lg border border-line-axis bg-surface-card px-3 py-2.5 text-sm text-ink placeholder:text-ink-muted focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100"
           />
-          <p className="mt-4 text-center text-3xl tracking-[0.5em] text-ink">{'•'.repeat(pin.length) || 'PIN'}</p>
-
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'].map((key, i) => (
-              <button
-                key={i}
-                type="button"
-                disabled={!key}
-                onClick={() => (key === '⌫' ? setPin(pin.slice(0, -1)) : key && pressDigit(key))}
-                className="h-14 rounded-lg bg-surface-card text-xl font-semibold text-ink disabled:opacity-0 enabled:hover:bg-line-hair"
-              >
-                {key}
-              </button>
-            ))}
-          </div>
 
           {pinError && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-700">{pinError}</p>}
           {pinMessage && <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-center text-sm text-emerald-700">{pinMessage}</p>}
@@ -346,7 +328,7 @@ export default function KioskFacialPage() {
           <button
             type="button"
             onClick={submitPin}
-            disabled={pinLoading || !employeeCode || !pin}
+            disabled={pinLoading || !identifier}
             className="mt-5 w-full rounded-lg bg-ink py-3.5 text-sm font-bold text-white disabled:opacity-50"
           >
             {pinLoading ? 'Registrando...' : 'Registrar'}
