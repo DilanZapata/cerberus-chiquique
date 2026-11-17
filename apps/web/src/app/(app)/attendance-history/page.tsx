@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { MapPin, Image as ImageIcon, Pencil, X } from 'lucide-react';
+import { MapPin, Image as ImageIcon, Pencil, Table2, X } from 'lucide-react';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -90,6 +90,14 @@ export default function AttendanceHistoryPage() {
             <label className="block text-sm font-medium text-ink-secondary">Hasta</label>
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputClass} />
           </div>
+          {employeeId && (
+            <Link href={`/planilla?employeeId=${employeeId}`}>
+              <Button variant="secondary">
+                <Table2 size={16} />
+                Ver planilla del periodo
+              </Button>
+            </Link>
+          )}
           {employeeId && (
             <Link href={`/payroll-manual?employeeId=${employeeId}&from=${from}&to=${to}`}>
               <Button variant="secondary">

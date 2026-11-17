@@ -693,6 +693,8 @@ model EmailSettings {
   fromEmail              String       @map("from_email")
   adminRecipients        String[]     @map("admin_recipients")
   weeklyAlertEnabled     Boolean      @default(true) @map("weekly_alert_enabled")
+  // Llegada tarde al instante + resumen diario de asistencia (ver AttendanceAlertService).
+  attendanceAlertsEnabled Boolean     @default(true) @map("attendance_alerts_enabled")
   weeklyAlertCron        String       @default("0 7 * * 1") @map("weekly_alert_cron")
   createdAt              DateTime     @default(now()) @map("created_at")
   updatedAt              DateTime     @updatedAt @map("updated_at")

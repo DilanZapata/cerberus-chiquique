@@ -2,7 +2,9 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   calculateDailyNovelties,
   getIsoWeekKey,
+  isColombianHoliday,
   PlannedShiftWindow,
+  resolveLunch,
   round,
 } from '@cerberus/cst-rules';
 import {
@@ -73,6 +75,17 @@ const MAX_CONSECUTIVE_WORK_DAYS = 6;
 const MAX_LOOKBACK_DAYS_FOR_REST_CHECK = 60;
 
 const SUNDAY_HOLIDAY_CODES: PrismaNoveltyCode[] = ['DDCOF', 'DNCOF', 'HEFD', 'HEFN'] as PrismaNoveltyCode[];
+
+// Conceptos de hora extra que acompanan a HORA_EXTRA_PENDIENTE y heredan su
+// decision (aprobada/rechazada) -- ver persist().
+const OVERTIME_DETAIL_CODES: PrismaNoveltyCode[] = ['HEOD', 'HEON', 'HEFD', 'HEFN'] as PrismaNoveltyCode[];
+const OVERTIME_RESULT_CODES = new Set<NoveltyCode>([
+  NoveltyCode.HEOD,
+  NoveltyCode.HEON,
+  NoveltyCode.HEFD,
+  NoveltyCode.HEFN,
+  NoveltyCode.HORA_EXTRA_PENDIENTE,
+]);
 
 export interface ShiftResolution {
   plannedShift?: PlannedShiftWindow;
@@ -316,6 +329,25 @@ export class NoveltiesService {
     };
   }
 
+  /**
+   * Para la planilla por persona (reports): las marcas del turno que inicia
+   * en `date` y los intervalos EFECTIVAMENTE trabajados, con el almuerzo ya
+   * descontado por exactamente la misma regla (`resolveLunch`) que usa el
+   * calculo de nomina -- para que la cuadricula hora a hora y los totales
+   * de novedades nunca cuenten horas distintas.
+   */
+  async getWorkedSegmentsForDay(userId: string, date: Date, allowsLunchSkip: boolean) {
+    const [marks, lunchPolicy] = await Promise.all([
+      this.getDayMarks(userId, date),
+      this.getLunchPolicy(userId, date, allowsLunchSkip),
+    ]);
+    // Sin salida final no hay intervalo cerrado que contar: una jornada
+    // abierta se muestra con sus marcas pero sin horas (resolveLunch usaria
+    // "ahora" como referencia, lo que no aplica a un reporte historico).
+    const segments = marks.checkIn && marks.checkOut ? resolveLunch(marks, lunchPolicy).workedSegments : [];
+    return { marks, segments };
+  }
+
   /** Calcula el resultado del dia SIN persistir (usado tambien para reconstruir el acumulado semanal). */
   private async computeDayResult(userId: string, date: Date): Promise<DailyCalculationResult> {
     const user = await this.prisma.user.findUnique({
@@ -368,7 +400,16 @@ export class NoveltiesService {
         };
       }
 
-      if (shiftResolution.plannedShift && !shiftResolution.isScheduledRestDay) {
+      // Un festivo que cae en un dia normalmente laboral del horario semanal
+      // es descanso: no ir a trabajar ese dia NO es ausencia. Solo cuenta
+      // como ausencia si la persona tenia un turno programado EXPLICITAMENTE
+      // para esa fecha (fila `Shift` de una rutina rotativa: vigilantes,
+      // ordeno), porque ahi si se esperaba que fuera aunque sea festivo.
+      const isHolidayWithoutExplicitShift =
+        isColombianHoliday(date) &&
+        !(await this.prisma.shift.findUnique({ where: { userId_workDate: { userId, workDate: date } }, select: { id: true } }));
+
+      if (shiftResolution.plannedShift && !shiftResolution.isScheduledRestDay && !isHolidayWithoutExplicitShift) {
         // Dia programado como laborable (y no es descanso), sin absolutamente
         // ninguna marca ni incidencia aprobada que lo cubra (ya se descarto
         // esa cobertura mas arriba, en persistIncidenceCoverage): ausencia
@@ -707,6 +748,23 @@ export class NoveltiesService {
   private async persist(userId: string, workDate: string, result: DailyCalculationResult): Promise<void> {
     const date = new Date(`${workDate}T00:00:00`);
 
+    // Recalcular un dia borra y recrea sus novedades SISTEMA (y, en cascada,
+    // la solicitud de hora extra). Si esas horas extra YA habian sido
+    // aprobadas o rechazadas por un supervisor, se guarda esa decision para
+    // volver a aplicarla mas abajo cuando el recalculo arroja exactamente
+    // las mismas horas -- sin esto, corregir cualquier marca del dia (o
+    // cualquier recalculo) devolvia a PENDIENTE una hora extra ya decidida.
+    const previousDecision = await this.prisma.novelty.findFirst({
+      where: {
+        userId,
+        workDate: date,
+        code: toPrismaNoveltyCode(NoveltyCode.HORA_EXTRA_PENDIENTE),
+        origin: toPrismaNoveltyOrigin(NoveltyOrigin.SISTEMA),
+        status: { in: [PrismaNoveltyStatus.APROBADA, PrismaNoveltyStatus.RECHAZADA] },
+      },
+      include: { overtimeApprovals: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+
     await this.prisma.$transaction([
       this.prisma.novelty.deleteMany({
         where: { userId, workDate: date, origin: toPrismaNoveltyOrigin(NoveltyOrigin.SISTEMA) },
@@ -748,7 +806,54 @@ export class NoveltiesService {
       const created = await this.prisma.novelty.findFirst({
         where: { userId, workDate: date, code: toPrismaNoveltyCode(NoveltyCode.HORA_EXTRA_PENDIENTE) },
       });
-      if (created) {
+      const previousApproval = previousDecision?.overtimeApprovals[0];
+      const sameHoursAsDecided =
+        !!previousDecision && !!previousApproval && previousApproval.requestedHours.toNumber() === pendingOvertime.hours;
+
+      if (created && previousDecision && previousApproval && sameHoursAsDecided) {
+        // Mismas horas extra que ya se habian decidido: se conserva la decision.
+        const decidedStatus = previousDecision.status;
+        await this.prisma.$transaction([
+          this.prisma.novelty.update({
+            where: { id: created.id },
+            data: {
+              status: decidedStatus,
+              hours: previousDecision.hours,
+              reviewedById: previousDecision.reviewedById,
+              reviewedAt: previousDecision.reviewedAt,
+            },
+          }),
+          this.prisma.novelty.updateMany({
+            where: {
+              userId,
+              workDate: date,
+              code: { in: OVERTIME_DETAIL_CODES },
+              status: PrismaNoveltyStatus.PENDIENTE,
+            },
+            data: {
+              status: decidedStatus,
+              reviewedById: previousDecision.reviewedById,
+              reviewedAt: previousDecision.reviewedAt,
+            },
+          }),
+          this.prisma.overtimeApproval.create({
+            data: {
+              noveltyId: created.id,
+              requestedHours: previousApproval.requestedHours,
+              approvedHours: previousApproval.approvedHours,
+              status: previousApproval.status,
+              decidedById: previousApproval.decidedById,
+              decidedAt: previousApproval.decidedAt,
+              decisionNotes: previousApproval.decisionNotes,
+            },
+          }),
+        ]);
+        const decided = decidedStatus as unknown as NoveltyStatus;
+        for (const novelty of result.novelties) {
+          if (novelty.status === NoveltyStatus.PENDIENTE && OVERTIME_RESULT_CODES.has(novelty.code)) novelty.status = decided;
+        }
+        result.hasPendingOvertime = false;
+      } else if (created) {
         await this.prisma.overtimeApproval.create({
           data: {
             noveltyId: created.id,

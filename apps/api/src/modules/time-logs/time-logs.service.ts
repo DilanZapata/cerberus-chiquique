@@ -8,6 +8,7 @@ import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-s
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { NoveltiesService } from '../novelties/novelties.service';
+import { AttendanceAlertService } from '../notifications/attendance-alert.service';
 import { MobileClockDto } from './dto/mobile-clock.dto';
 import { ManualTimeLogDto } from './dto/manual-time-log.dto';
 import { CreateMarkDto } from './dto/single-mark.dto';
@@ -92,6 +93,7 @@ export class TimeLogsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly noveltiesService: NoveltiesService,
+    private readonly attendanceAlertService: AttendanceAlertService,
   ) {}
 
   async mobileClock(userId: string, dto: MobileClockDto) {
@@ -182,7 +184,12 @@ export class TimeLogsService {
       throw err;
     }
 
-    await this.noveltiesService.calculateAndPersistForDay(userId, resolved.workDate);
+    const dayResult = await this.noveltiesService.calculateAndPersistForDay(userId, resolved.workDate);
+    // Aviso a la empresa si la entrada fue tarde. Sin `await` a proposito:
+    // el envio del correo no debe demorar ni tumbar la respuesta de la app.
+    if (resolved.nextLogType === TimeLogType.CHECK_IN) {
+      void this.attendanceAlertService.notifyLateArrival(userId, dayResult, now);
+    }
 
     return { logType: resolved.nextLogType, loggedAt: now, distanceMeters: Math.round(distanceMeters), reason: resolved.reason };
   }

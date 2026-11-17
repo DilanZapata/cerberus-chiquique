@@ -393,6 +393,8 @@ export interface EmailSettings {
   fromEmail: string;
   adminRecipients: string[];
   weeklyAlertEnabled: boolean;
+  /** Correo al instante por llegada tarde + resumen diario de asistencia. */
+  attendanceAlertsEnabled: boolean;
 }
 
 export async function getEmailSettings(companyId: string): Promise<EmailSettings | null> {
@@ -429,6 +431,77 @@ export async function downloadPayrollReport(companyId: string, from: string, to:
   const a = document.createElement('a');
   a.href = url;
   a.download = `nomina_${from}_${to}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---- Planilla por persona (cuadricula hora a hora + novedades de nomina) ----
+
+export const GRID_CONCEPTS = ['HEOD', 'HEON', 'HEFD', 'HEFN', 'RNO', 'DDCOF', 'DNCOF'] as const;
+export type GridConcept = (typeof GRID_CONCEPTS)[number];
+
+export interface ConceptHours {
+  /** Horas que SI entran a nomina (calculadas o ya aprobadas). */
+  payable: number;
+  /** Horas extra aun sin aprobar ni rechazar. */
+  pending: number;
+  /** Horas extra trabajadas pero rechazadas. */
+  rejected: number;
+}
+
+export interface AttendanceGridDay {
+  date: string;
+  dayOfMonth: number;
+  weekday: number;
+  isSunday: boolean;
+  isHoliday: boolean;
+  planned: string | null;
+  marks: { checkIn: string | null; lunchOut: string | null; lunchIn: string | null; checkOut: string | null };
+  /** Fraccion trabajada en cada hora de reloj (0-23) de ese dia calendario. */
+  hours: number[];
+  workedHours: number;
+  concepts: Record<GridConcept, ConceptHours>;
+  others: Array<{ code: string; label: string; hours: number; status: string; notes: string | null }>;
+}
+
+export interface AttendanceGrid {
+  employee: { id: string; fullName: string; employeeCode: string; nationalId: string };
+  from: string;
+  to: string;
+  days: AttendanceGridDay[];
+  totals: {
+    concepts: Record<GridConcept, ConceptHours>;
+    workedHours: number;
+    ordinaryHours: number;
+    pendingOvertimeHours: number;
+    rejectedOvertimeHours: number;
+    lateCount: number;
+    lateHours: number;
+    earlyExitCount: number;
+    earlyExitHours: number;
+    absenceCount: number;
+    permissionDays: number;
+    sickLeaveDays: number;
+    daysWorked: number;
+  };
+}
+
+export function getAttendanceGrid(userId: string, from: string, to: string): Promise<AttendanceGrid> {
+  return apiJson(`/reports/attendance-grid?userId=${userId}&from=${from}&to=${to}`);
+}
+
+/** Descarga la planilla en Excel: de una persona (`userId`) o de todos los empleados (una hoja por persona + resumen). */
+export async function downloadAttendanceGrid(from: string, to: string, userId?: string, fileLabel?: string) {
+  const res = await apiFetch(`/reports/attendance-grid/export?from=${from}&to=${to}${userId ? `&userId=${userId}` : ''}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.message ?? `Error ${res.status} al generar la planilla`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `planilla_${fileLabel ?? 'todos'}_${from}_${to}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
 }

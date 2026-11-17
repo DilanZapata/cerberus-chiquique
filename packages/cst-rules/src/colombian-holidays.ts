@@ -74,6 +74,11 @@ function getHolidaySet(year: number): Set<string> {
   return set;
 }
 
+/** Indica si una fecha (dia calendario) es festivo colombiano (sin contar los domingos que no lo sean). */
+export function isColombianHoliday(date: Date): boolean {
+  return getHolidaySet(date.getUTCFullYear()).has(ymd(date));
+}
+
 /** Indica si una fecha (dia calendario) es domingo o festivo colombiano. */
 export function isSundayOrHoliday(date: Date): boolean {
   if (date.getUTCDay() === 0) return true;

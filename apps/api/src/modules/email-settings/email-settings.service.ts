@@ -35,6 +35,7 @@ export class EmailSettingsService {
       fromEmail: dto.fromEmail,
       adminRecipients: dto.adminRecipients,
       weeklyAlertEnabled: dto.weeklyAlertEnabled ?? true,
+      attendanceAlertsEnabled: dto.attendanceAlertsEnabled ?? true,
     };
     const settings = await this.prisma.emailSettings.upsert({
       where: { companyId },

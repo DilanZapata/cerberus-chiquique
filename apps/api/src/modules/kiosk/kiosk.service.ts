@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { TimeLogSource, User, WorkSite } from '@prisma/client';
+import { TimeLogSource, TimeLogType, User, WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
 import { describeClosedShift, findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
@@ -9,6 +9,7 @@ import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-s
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { NoveltiesService } from '../novelties/novelties.service';
 import { FaceRecognitionService } from '../face-recognition/face-recognition.service';
+import { AttendanceAlertService } from '../notifications/attendance-alert.service';
 import { KioskClockDto } from './dto/kiosk-clock.dto';
 import { KioskFaceClockDto } from './dto/kiosk-face-clock.dto';
 
@@ -18,6 +19,7 @@ export class KioskService {
     private readonly prisma: PrismaService,
     private readonly noveltiesService: NoveltiesService,
     private readonly faceRecognitionService: FaceRecognitionService,
+    private readonly attendanceAlertService: AttendanceAlertService,
   ) {}
 
   /**
@@ -220,7 +222,12 @@ export class KioskService {
       throw err;
     }
 
-    await this.noveltiesService.calculateAndPersistForDay(user.id, resolved.workDate);
+    const dayResult = await this.noveltiesService.calculateAndPersistForDay(user.id, resolved.workDate);
+    // Aviso a la empresa si la entrada fue tarde. Sin `await` a proposito:
+    // el envio del correo no debe demorar ni tumbar la respuesta del kiosco.
+    if (resolved.nextLogType === TimeLogType.CHECK_IN) {
+      void this.attendanceAlertService.notifyLateArrival(user.id, dayResult, now);
+    }
 
     return {
       fullName: user.fullName,

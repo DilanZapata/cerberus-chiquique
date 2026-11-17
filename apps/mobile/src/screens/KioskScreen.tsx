@@ -372,6 +372,11 @@ export default function KioskScreen({ navigation }: Props) {
                 value={identifier}
                 onChangeText={setIdentifier}
                 autoCapitalize="characters"
+                // Numerico por defecto (cedula y PIN son numericos, el caso
+                // mas comun) -- en Android el propio teclado trae un boton
+                // para pasar a letras si hace falta para un codigo como
+                // "ADM001".
+                keyboardType="numeric"
                 returnKeyType="done"
                 onSubmitEditing={submitPin}
               />

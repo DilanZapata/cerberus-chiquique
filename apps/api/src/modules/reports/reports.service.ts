@@ -5,6 +5,7 @@ import { PrismaService } from '../../database/prisma.service';
 
 const PERMISSION_CODES = new Set(['PERMISO_REMUNERADO', 'PERMISO_NO_REMUNERADO', 'PERMISO_SALIDA_TEMPORAL']);
 const SICK_LEAVE_CODES = new Set(['INCAPACIDAD_GENERAL', 'INCAPACIDAD_ARL']);
+const OVERTIME_CODES = new Set<string>(['HEOD', 'HEON', 'HEFD', 'HEFN']);
 
 function clippedDaySpan(start: Date, end: Date, from: Date, to: Date): number {
   const clippedStart = start > from ? start : from;
@@ -59,6 +60,10 @@ export class ReportsService {
       { header: 'HEFN', key: 'HEFN', width: 10 },
       { header: 'Horas no autorizadas', key: 'unauthorizedHours', width: 20 },
       { header: 'Total horas trabajadas', key: 'totalWorkedHours', width: 20 },
+      { header: 'Horas ordinarias', key: 'ordinaryHours', width: 16 },
+      { header: 'Llegadas tarde', key: 'lateCount', width: 14 },
+      { header: 'Horas de tardanza', key: 'lateHours', width: 16 },
+      { header: 'Salidas anticipadas', key: 'earlyExitCount', width: 18 },
       { header: 'Dias ausencia', key: 'daysAbsent', width: 14 },
       { header: 'Dias permiso', key: 'daysPermission', width: 14 },
       { header: 'Dias incapacidad', key: 'daysSickLeave', width: 16 },
@@ -84,9 +89,21 @@ export class ReportsService {
       // -- ni se pagaban (correcto) ni quedaban documentadas en ninguna
       // columna (incorrecto: "no autorizada" no significa que el trabajo no
       // se realizo). Corrige el hallazgo F.3 de la auditoria 2026-10-16.
+      //
+      // Solo se suman los conceptos de detalle (HEOD/HEON/HEFD/HEFN): antes
+      // se sumaba CUALQUIER novedad pendiente/rechazada, incluida
+      // HORA_EXTRA_PENDIENTE -- que es el agregado de esas mismas horas --
+      // asi que cada hora extra sin autorizar salia contada dos veces.
       row.unauthorizedHours = userNovelties
-        .filter((n) => n.status === 'PENDIENTE' || n.status === 'RECHAZADA')
+        .filter((n) => OVERTIME_CODES.has(n.code) && (n.status === 'PENDIENTE' || n.status === 'RECHAZADA'))
         .reduce((sum, n) => sum + n.hours.toNumber(), 0);
+
+      const userTotals = totals.filter((t) => t.userId === user.id);
+      row.ordinaryHours = userTotals.reduce((sum, t) => sum + t.totalOrdinaryHours.toNumber(), 0);
+      const lateArrivals = userNovelties.filter((n) => n.code === 'LLEGADA_TARDE');
+      row.lateCount = lateArrivals.length;
+      row.lateHours = lateArrivals.reduce((sum, n) => sum + n.hours.toNumber(), 0);
+      row.earlyExitCount = userNovelties.filter((n) => n.code === 'SALIDA_ANTICIPADA').length;
 
       row.totalWorkedHours = totals
         .filter((t) => t.userId === user.id)

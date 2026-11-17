@@ -23,6 +23,7 @@ export default function EmailSettingsPage() {
     fromEmail: '',
     adminRecipients: [],
     weeklyAlertEnabled: true,
+    attendanceAlertsEnabled: true,
   });
   const [recipientsText, setRecipientsText] = useState('');
   const [status, setStatus] = useState<string | null>(null);
@@ -82,7 +83,7 @@ export default function EmailSettingsPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      <PageHeader title="Configuracion SMTP" subtitle="Alertas semanales de novedades pendientes de autorizacion." />
+      <PageHeader title="Configuracion SMTP" subtitle="Servidor de correo para las alertas de asistencia (llegadas tarde, ausencias), las novedades pendientes de autorizacion y el codigo para restablecer contrasena." />
 
       <Card className="p-5">
         <div className="flex items-center gap-3">
@@ -152,6 +153,38 @@ export default function EmailSettingsPage() {
               <label className={labelClass}>Correos administrativos (separados por coma)</label>
               <input required value={recipientsText} onChange={(e) => setRecipientsText(e.target.value)} className={inputClass} />
             </div>
+          </div>
+
+          <div className="space-y-2 rounded-lg border border-line-hair p-3">
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.attendanceAlertsEnabled}
+                onChange={(e) => setForm({ ...form, attendanceAlertsEnabled: e.target.checked })}
+              />
+              <span>
+                <span className="font-medium">Alertas de asistencia</span>
+                <span className="block text-xs text-ink-secondary">
+                  Un correo al instante cuando alguien marca la entrada tarde, y un resumen diario con las llegadas
+                  tarde, salidas anticipadas, ausencias y jornadas sin salida del dia anterior.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.weeklyAlertEnabled}
+                onChange={(e) => setForm({ ...form, weeklyAlertEnabled: e.target.checked })}
+              />
+              <span>
+                <span className="font-medium">Alertas de novedades pendientes</span>
+                <span className="block text-xs text-ink-secondary">
+                  Aviso de horas extra y permisos que llevan varios dias sin aprobar ni rechazar.
+                </span>
+              </span>
+            </label>
           </div>
 
           {status && <p className="rounded-lg bg-emerald-50 p-2 text-sm text-emerald-700">{status}</p>}

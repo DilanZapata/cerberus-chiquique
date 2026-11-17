@@ -319,6 +319,10 @@ export default function KioskFacialPage() {
             onChange={(e) => setIdentifier(e.target.value.toUpperCase())}
             placeholder="Digita cualquiera de los 3"
             onKeyDown={(e) => e.key === 'Enter' && submitPin()}
+            // Numerico por defecto (cedula y PIN son numericos, el caso mas
+            // comun); el teclado tactil trae su propio boton para pasar a
+            // letras si hace falta para un codigo como "ADM001".
+            inputMode="numeric"
             className="mt-1 w-full rounded-lg border border-line-axis bg-surface-card px-3 py-2.5 text-sm text-ink placeholder:text-ink-muted focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100"
           />
 

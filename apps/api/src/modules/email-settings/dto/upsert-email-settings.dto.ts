@@ -32,4 +32,9 @@ export class UpsertEmailSettingsDto {
   @IsOptional()
   @IsBoolean()
   weeklyAlertEnabled?: boolean;
+
+  /** Correo al instante por llegada tarde + resumen diario de asistencia. */
+  @IsOptional()
+  @IsBoolean()
+  attendanceAlertsEnabled?: boolean;
 }

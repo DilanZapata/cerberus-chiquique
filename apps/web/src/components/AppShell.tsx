@@ -24,6 +24,7 @@ import {
   Briefcase,
   Pencil,
   AlertTriangle,
+  Table2,
 } from 'lucide-react';
 import { clearSession, getUser } from '@/lib/auth';
 
@@ -56,6 +57,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/overtime', label: 'Horas Extra', icon: Clock3 },
       { href: '/incidences', label: 'Permisos e Incapacidades', icon: FileText },
       { href: '/rest-credits', label: 'Descanso Compensatorio', icon: CalendarCheck2 },
+      { href: '/planilla', label: 'Planilla por Persona', icon: Table2 },
       { href: '/reports', label: 'Reportes (Excel)', icon: FileSpreadsheet },
     ],
   },

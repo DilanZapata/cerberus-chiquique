@@ -1,7 +1,8 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { FileSpreadsheet, Download } from 'lucide-react';
+import Link from 'next/link';
+import { FileSpreadsheet, Download, Table2 } from 'lucide-react';
 import { downloadPayrollReport } from '@/lib/api';
 import { getCompanyId } from '@/lib/auth';
 import { PageHeader } from '@/components/ui/PageHeader';
@@ -39,7 +40,7 @@ export default function ReportsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Exportar Nomina"
-        subtitle="Genera el reporte en Excel con RNO, DDCOF, DNCOF, HEOD, HEON, HEFD, HEFN, horas no autorizadas y resumen de ausencias por empleado."
+        subtitle="Genera el reporte en Excel con RNO, DDCOF, DNCOF, HEOD, HEON, HEFD, HEFN, horas extra sin autorizar, horas ordinarias, llegadas tarde y resumen de ausencias, permisos e incapacidades por empleado."
       />
 
       <Card className="mx-auto max-w-xl p-6">
@@ -68,6 +69,20 @@ export default function ReportsPage() {
             {loading ? 'Generando...' : 'Descargar Excel'}
           </Button>
         </form>
+      </Card>
+
+      <Card className="mx-auto max-w-xl p-6">
+        <div className="text-sm font-medium text-ink">Planilla por persona</div>
+        <p className="mt-1 text-sm text-ink-secondary">
+          El detalle dia por dia y hora por hora de cada persona (el formato de la planilla en Excel), con descarga
+          individual o de todos los empleados.
+        </p>
+        <Link href="/planilla" className="mt-3 inline-block">
+          <Button variant="secondary">
+            <Table2 size={16} />
+            Abrir planilla por persona
+          </Button>
+        </Link>
       </Card>
     </div>
   );
