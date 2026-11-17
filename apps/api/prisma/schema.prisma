@@ -273,6 +273,8 @@ model User {
   compensatoryRestCredits CompensatoryRestCredit[]
   faceEnrollment     FaceEnrollment?
   passwordResetCodes PasswordResetCode[]
+  overtimeAuthorizations        OvertimeAuthorization[] @relation("OvertimeAuthorizationsOfUser")
+  overtimeAuthorizationsGranted OvertimeAuthorization[] @relation("OvertimeAuthorizationsGranted")
 
   @@unique([companyId, employeeCode])
   @@unique([companyId, nationalId])
@@ -491,12 +493,38 @@ model PayrollSettings {
   companyId                       String   @unique @map("company_id")
   overtimeRequiresPreauthorization Boolean @default(true) @map("overtime_requires_preauthorization")
   overtimePendingAlertDays        Int      @default(7) @map("overtime_pending_alert_days")
+  // Roles que pueden autorizar horas extra en esta empresa (ADMIN siempre puede).
+  overtimeApproverRoles           UserRole[] @default([ADMIN, HR, SUPERVISOR]) @map("overtime_approver_roles")
   createdAt                       DateTime @default(now()) @map("created_at")
   updatedAt                       DateTime @updatedAt @map("updated_at")
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@map("payroll_settings")
+}
+
+// Autorizacion de horas extra por persona y por dia (antes o despues de
+// trabajarlas). El calculo paga min(autorizadas, trabajadas); el excedente
+// queda PENDIENTE, o RECHAZADO si `excessRejected`. Es la fuente de verdad
+// de la decision: sobrevive a cualquier recalculo del dia.
+model OvertimeAuthorization {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  workDate            DateTime @map("work_date") @db.Date
+  authorizedHours     Decimal  @default(0) @map("authorized_hours") @db.Decimal(6, 3)
+  excessRejected      Boolean  @default(false) @map("excess_rejected")
+  authorizedById      String?  @map("authorized_by")
+  notes               String?
+  excessNotifiedHours Decimal  @default(0) @map("excess_notified_hours") @db.Decimal(6, 3)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user         User  @relation("OvertimeAuthorizationsOfUser", fields: [userId], references: [id], onDelete: Cascade)
+  authorizedBy User? @relation("OvertimeAuthorizationsGranted", fields: [authorizedById], references: [id])
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+  @@map("overtime_authorizations")
 }
 
 // Parametros legales con vigencia por fecha (Ley 2466 de 2025 y sucesoras

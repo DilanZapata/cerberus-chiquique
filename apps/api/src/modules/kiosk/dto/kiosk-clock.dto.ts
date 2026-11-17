@@ -9,8 +9,8 @@ export class KioskClockDto {
   longitude!: number;
 
   /** Cedula, codigo de empleado, O PIN -- cualquiera de los tres identifica (ver KioskService.identifyByCodeOrPin). */
-  @IsString()
-  @MinLength(1)
+  @IsString({ message: 'Digita tu cedula, tu codigo o tu PIN.' })
+  @MinLength(1, { message: 'Digita tu cedula, tu codigo o tu PIN.' })
   identifier!: string;
 
   /** Foto de evidencia tomada al momento de marcar (opcional, base64). */

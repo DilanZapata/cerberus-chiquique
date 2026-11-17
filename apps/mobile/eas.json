@@ -4,14 +4,28 @@
     "appVersionSource": "local"
   },
   "build": {
-    "preview": {
+    "staff": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://apicerberus.chiquique.com/api"
+        "EXPO_PUBLIC_API_URL": "https://apicerberus.chiquique.com/api",
+        "EXPO_PUBLIC_APP_VARIANT": "staff"
       }
+    },
+    "managers": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://apicerberus.chiquique.com/api",
+        "EXPO_PUBLIC_APP_VARIANT": "managers"
+      }
+    },
+    "preview": {
+      "extends": "staff"
     },
     "production": {
       "autoIncrement": true,
@@ -19,7 +33,18 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://apicerberus.chiquique.com/api"
+        "EXPO_PUBLIC_API_URL": "https://apicerberus.chiquique.com/api",
+        "EXPO_PUBLIC_APP_VARIANT": "staff"
+      }
+    },
+    "production-managers": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://apicerberus.chiquique.com/api",
+        "EXPO_PUBLIC_APP_VARIANT": "managers"
       }
     }
   },

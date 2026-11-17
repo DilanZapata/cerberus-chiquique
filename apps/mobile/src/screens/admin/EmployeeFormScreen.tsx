@@ -13,6 +13,7 @@ import {
   updateEmployee,
   WorkSite,
 } from '../../services/api';
+import { localDateISO } from '../../utils/dates';
 
 const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'EMPLOYEE', label: 'Empleado' },
@@ -38,7 +39,7 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
   const [role, setRole] = useState('EMPLOYEE');
   const [departmentId, setDepartmentId] = useState('');
   const [workSiteIds, setWorkSiteIds] = useState<string[]>([]);
-  const [hireDate, setHireDate] = useState(new Date().toISOString().slice(0, 10));
+  const [hireDate, setHireDate] = useState(localDateISO());
   const [baseSalary, setBaseSalary] = useState('');
   const [allowsLunchSkip, setAllowsLunchSkip] = useState(false);
   const [password, setPassword] = useState('');

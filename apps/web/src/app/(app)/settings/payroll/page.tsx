@@ -5,6 +5,7 @@ import { Pencil, Plus, ShieldCheck, SlidersHorizontal, X } from 'lucide-react';
 import {
   CreatePayrollConfigVersionBody,
   PayrollConfigVersion,
+  OvertimeApproverRole,
   PayrollSettings,
   createPayrollConfigVersion,
   getPayrollConfigVersions,
@@ -291,6 +292,12 @@ function VersionForm({
   );
 }
 
+const APPROVER_ROLE_OPTIONS: Array<{ role: OvertimeApproverRole; label: string }> = [
+  { role: 'ADMIN', label: 'Administrador' },
+  { role: 'HR', label: 'Recursos Humanos' },
+  { role: 'SUPERVISOR', label: 'Supervisor' },
+];
+
 function OvertimeAuthorizationCard({ companyId }: { companyId: string }) {
   const [settings, setSettings] = useState<PayrollSettings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -319,7 +326,26 @@ function OvertimeAuthorizationCard({ companyId }: { companyId: string }) {
     }
   }
 
+  async function handleRoleToggle(role: OvertimeApproverRole, enabled: boolean) {
+    if (!settings) return;
+    const previous = settings;
+    const current = settings.overtimeApproverRoles ?? ['ADMIN', 'HR', 'SUPERVISOR'];
+    const roles = enabled ? [...current.filter((r) => r !== role), role] : current.filter((r) => r !== role);
+    setSettings({ ...settings, overtimeApproverRoles: roles });
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(await updatePayrollSettings(companyId, { overtimeApproverRoles: roles }));
+    } catch (err) {
+      setSettings(previous);
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
+    <div className="space-y-3">
     <div className="relative overflow-hidden rounded-2xl">
       {/* manchas de color desenfocadas detras del vidrio */}
       <div aria-hidden className="pointer-events-none absolute -left-10 -top-16 h-40 w-40 rounded-full bg-brand-400/40 blur-3xl" />
@@ -358,6 +384,33 @@ function OvertimeAuthorizationCard({ companyId }: { companyId: string }) {
           )}
         </div>
       </div>
+    </div>
+
+      <Card className="p-5">
+        <div className="text-sm font-semibold text-ink">Quien puede autorizar horas extra</div>
+        <p className="mt-0.5 text-xs text-ink-secondary">
+          Marca los roles que pueden autorizar, aprobar o rechazar horas extra (en el panel web y en la app Cerberus
+          Managers). Puedes cambiarlo cuando quieras; aplica de inmediato.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+          {APPROVER_ROLE_OPTIONS.map((option) => {
+            const checked = option.role === 'ADMIN' || (settings?.overtimeApproverRoles ?? []).includes(option.role);
+            return (
+              <label key={option.role} className="flex items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-line-axis accent-emerald-600"
+                  checked={checked}
+                  disabled={!settings || saving || option.role === 'ADMIN'}
+                  onChange={(event) => handleRoleToggle(option.role, event.target.checked)}
+                />
+                {option.label}
+                {option.role === 'ADMIN' && <span className="text-xs text-ink-muted">(siempre)</span>}
+              </label>
+            );
+          })}
+        </div>
+      </Card>
     </div>
   );
 }

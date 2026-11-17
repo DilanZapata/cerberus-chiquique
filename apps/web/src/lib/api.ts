@@ -89,7 +89,19 @@ export interface PendingOvertime {
   requestedHours: string;
   status: string;
   createdAt: string;
-  novelty: { workDate: string; hours: string; notes: string | null; user: { fullName: string; employeeCode: string } };
+  /** Lo que ya se habia autorizado para ese dia (0 si nada). */
+  authorizedHours: number;
+  authorizedByName: string | null;
+  /** Horas extra que realmente trabajo ese dia. */
+  workedHours: number;
+  pendingHours: number;
+  novelty: {
+    userId: string;
+    workDate: string;
+    hours: string;
+    notes: string | null;
+    user: { fullName: string; employeeCode: string };
+  };
 }
 
 export function getPendingOvertime(): Promise<PendingOvertime[]> {
@@ -101,6 +113,47 @@ export function reviewOvertime(
   body: { status: 'APROBADA' | 'RECHAZADA'; approvedHours?: number; notes?: string },
 ) {
   return apiJson(`/novelties/overtime/${id}/review`, { method: 'POST', body: JSON.stringify(body) });
+}
+
+/** Autorizacion de horas extra de una persona en un dia, con lo que realmente trabajo. */
+export interface OvertimeAuthorizationRow {
+  userId: string;
+  fullName: string;
+  employeeCode: string;
+  workDate: string;
+  authorizedHours: number;
+  excessRejected: boolean;
+  authorizedByName: string | null;
+  notes: string | null;
+  updatedAt: string | null;
+  workedHours: number;
+  approvedHours: number;
+  pendingHours: number;
+  rejectedHours: number;
+}
+
+export type OvertimeApproverRole = 'ADMIN' | 'HR' | 'SUPERVISOR';
+
+export function getOvertimePermissions(): Promise<{
+  canApprove: boolean;
+  role: string;
+  approverRoles: OvertimeApproverRole[];
+}> {
+  return apiJson('/novelties/overtime/permissions');
+}
+
+/** "A esta persona, este dia, le autorizo N horas extra" (reemplaza la autorizacion anterior de ese dia). */
+export function authorizeOvertime(body: {
+  userId: string;
+  workDate: string;
+  hours: number;
+  notes?: string;
+}): Promise<OvertimeAuthorizationRow> {
+  return apiJson('/novelties/overtime/authorizations', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getOvertimeAuthorizations(from: string, to: string): Promise<OvertimeAuthorizationRow[]> {
+  return apiJson(`/novelties/overtime/authorizations?from=${from}&to=${to}`);
 }
 
 // ---- Jornadas abiertas (cierre automatico + revision) ----
@@ -372,6 +425,8 @@ export function updatePayrollConfigVersion(
 export interface PayrollSettings {
   overtimeRequiresPreauthorization: boolean;
   overtimePendingAlertDays: number;
+  /** Roles que pueden autorizar horas extra (ADMIN siempre incluido). */
+  overtimeApproverRoles: OvertimeApproverRole[];
 }
 
 export function getPayrollSettings(companyId: string): Promise<PayrollSettings> {

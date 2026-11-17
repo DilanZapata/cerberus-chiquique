@@ -1,6 +1,7 @@
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
-import { clearSession, loadSession, saveSession, Session } from '../services/auth';
+import { clearSession, isAdminRole, loadSession, saveSession, Session } from '../services/auth';
 import { login as loginRequest } from '../services/api';
+import { IS_MANAGERS } from '../config/variant';
 
 interface AuthContextValue {
   session: Session | null;
@@ -17,12 +18,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     loadSession()
-      .then(setSession)
+      // Managers nunca abre con una sesion de empleado raso.
+      .then((saved) => setSession(saved && IS_MANAGERS && !isAdminRole(saved.user.role) ? null : saved))
       .finally(() => setLoading(false));
   }, []);
 
   async function login(email: string, password: string) {
     const result = await loginRequest(email, password);
+    if (IS_MANAGERS && !isAdminRole(result.user.role)) {
+      // No se guarda la sesion: Managers es solo para quienes administran.
+      throw new Error(
+        'Esta app es solo para administradores, RRHH y supervisores. Para marcar tu asistencia usa la app Cerberus Staff.',
+      );
+    }
     await saveSession(result.accessToken, result.user);
     setSession({ accessToken: result.accessToken, user: result.user });
   }

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { TimeLogSource, TimeLogType, User, WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
@@ -15,6 +15,8 @@ import { KioskFaceClockDto } from './dto/kiosk-face-clock.dto';
 
 @Injectable()
 export class KioskService {
+  private readonly logger = new Logger(KioskService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly noveltiesService: NoveltiesService,
@@ -56,23 +58,39 @@ export class KioskService {
    * de los dos es sin adivinar -- se rechaza explicitamente en vez de
    * marcarle la asistencia a la persona equivocada.
    */
-  private async identifyByCodeOrPin(identifier: string, companyIds: string[]): Promise<User | null> {
+  private async identifyByCodeOrPin(rawIdentifier: string, companyIds: string[]): Promise<User | null> {
+    // Se tolera lo que la gente realmente teclea: espacios de mas, la cedula
+    // con puntos ("1.112.038.485") y el codigo en minusculas ("adm001").
+    const identifier = rawIdentifier.trim();
+    const withoutSeparators = identifier.replace(/[\s.,-]/g, '');
+    const variants = [...new Set([identifier, withoutSeparators])].filter((v) => v.length > 0);
+    if (variants.length === 0) return null;
+
     const byCode = await this.prisma.user.findFirst({
       where: {
-        OR: [{ employeeCode: identifier }, { nationalId: identifier }],
+        OR: variants.flatMap((value) => [
+          { employeeCode: { equals: value, mode: 'insensitive' as const } },
+          { nationalId: value },
+        ]),
         companyId: { in: companyIds },
         isActive: true,
       },
     });
     if (byCode) return byCode;
 
+    // Un PIN siempre son 4 a 6 digitos: si lo digitado no tiene esa forma (ej.
+    // una cedula mal escrita) no vale la pena compararlo contra el PIN de
+    // cada empleado -- cada comparacion bcrypt es lenta a proposito y, con
+    // muchos empleados, el kiosco se quedaria "pensando" varios segundos.
+    if (!/^\d{4,6}$/.test(identifier)) return null;
+
     const candidates = await this.prisma.user.findMany({
       where: { companyId: { in: companyIds }, isActive: true, pinHash: { not: null } },
     });
-    const matches: User[] = [];
-    for (const candidate of candidates) {
-      if (await bcrypt.compare(identifier, candidate.pinHash!)) matches.push(candidate);
-    }
+    const comparisons = await Promise.all(
+      candidates.map(async (candidate) => ((await bcrypt.compare(identifier, candidate.pinHash!)) ? candidate : null)),
+    );
+    const matches = comparisons.filter((candidate): candidate is User => candidate !== null);
     if (matches.length > 1) {
       throw new UnauthorizedException('Ese PIN coincide con mas de un empleado; marca con tu cedula o codigo en su lugar.');
     }
@@ -191,7 +209,16 @@ export class KioskService {
       });
     }
 
-    const photoUrl = imageBase64 ? await saveTimeLogPhoto(imageBase64, 'kiosk') : undefined;
+    // La foto es solo evidencia para revisar despues: si no se puede guardar
+    // (imagen danada, disco lleno), la marca se registra igual, sin foto.
+    let photoUrl: string | undefined;
+    if (imageBase64) {
+      try {
+        photoUrl = await saveTimeLogPhoto(imageBase64, 'kiosk');
+      } catch (error) {
+        this.logger.warn(`No se pudo guardar la foto de evidencia de ${user.employeeCode}: ${(error as Error).message}`);
+      }
+    }
 
     try {
       await withUserRegistrationLock(this.prisma, user.id, async (tx) => {

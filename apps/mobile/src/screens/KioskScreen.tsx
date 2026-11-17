@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -36,13 +37,42 @@ type ResultTone = 'success' | 'warning' | 'error';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
 
-async function getCurrentCoords(): Promise<{ latitude: number; longitude: number }> {
+const PIN_RESULT_VISIBLE_MS = 7000; // cuanto queda en pantalla el resultado del registro por cedula/codigo/PIN
+const LOCATION_TIMEOUT_MS = 12000; // tope de espera por una posicion GPS nueva
+const LOCATION_CACHE_MS = 2 * 60_000; // el kiosco es una terminal fija: la ultima posicion sirve un rato
+const LOCATION_REFRESH_MS = 90_000; // cada cuanto se refresca la posicion en segundo plano
+
+type Coords = { latitude: number; longitude: number };
+let cachedCoords: { coords: Coords; at: number } | null = null;
+
+/**
+ * Ubicacion del kiosco. Pedir una posicion GPS nueva puede tardar varios
+ * segundos (o no llegar nunca bajo techo), y eso dejaba el boton
+ * "Registrar" cargando sin responder. Por eso: se reutiliza la ultima
+ * posicion durante un par de minutos, la espera tiene tope, y si no llega
+ * una posicion nueva se usa la ultima conocida del telefono.
+ */
+async function getCurrentCoords(): Promise<Coords> {
   const { status } = await Location.requestForegroundPermissionsAsync();
   if (status !== 'granted') {
     throw new Error('Se necesita permiso de ubicacion para identificar la sede de este kiosco.');
   }
-  const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-  return { latitude: position.coords.latitude, longitude: position.coords.longitude };
+  if (cachedCoords && Date.now() - cachedCoords.at < LOCATION_CACHE_MS) return cachedCoords.coords;
+  if (!(await Location.hasServicesEnabledAsync())) {
+    throw new Error('La ubicacion (GPS) del dispositivo esta apagada. Enciendela e intenta de nuevo.');
+  }
+
+  const fresh = await Promise.race([
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), LOCATION_TIMEOUT_MS)),
+  ]);
+  const position = fresh ?? (await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }).catch(() => null));
+  if (!position) {
+    throw new Error('No se pudo obtener la ubicacion. Verifica que el GPS este encendido e intenta de nuevo.');
+  }
+  const coords = { latitude: position.coords.latitude, longitude: position.coords.longitude };
+  cachedCoords = { coords, at: Date.now() };
+  return coords;
 }
 
 const FRAME_COLOR: Record<KioskState, string> = {
@@ -302,25 +332,75 @@ export default function KioskScreen({ navigation }: Props) {
   const [pinMessage, setPinMessage] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinLoading, setPinLoading] = useState(false);
+  // Numerico por defecto (cedula y PIN); "ABC" lo cambia para codigos con letras.
+  const [lettersKeyboard, setLettersKeyboard] = useState(false);
+  const identifierInputRef = useRef<TextInput>(null);
+  const pinSubmittingRef = useRef(false);
+  const pinResultTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Mientras el kiosco esta en esta pantalla, la ubicacion se va refrescando
+  // sola: asi al tocar "Registrar" ya esta lista y la marca sale al instante.
+  useEffect(() => {
+    if (!isFocused || !showPinMode) return;
+    const refresh = () => {
+      getCurrentCoords().catch(() => undefined); // si falla, el error se muestra al registrar
+    };
+    refresh();
+    const interval = setInterval(refresh, LOCATION_REFRESH_MS);
+    return () => clearInterval(interval);
+  }, [isFocused, showPinMode]);
+
+  useEffect(() => {
+    return () => {
+      if (pinResultTimeoutRef.current) clearTimeout(pinResultTimeoutRef.current);
+    };
+  }, []);
+
+  function toggleKeyboard() {
+    setLettersKeyboard((current) => !current);
+    // Android solo cambia de teclado al volver a enfocar el campo.
+    identifierInputRef.current?.blur();
+    setTimeout(() => identifierInputRef.current?.focus(), 150);
+  }
 
   async function submitPin() {
+    const value = identifier.trim();
+    // Candado real contra el doble toque (el boton deshabilitado tarda un render en aplicar).
+    if (!value || pinSubmittingRef.current) return;
+    pinSubmittingRef.current = true;
+    if (pinResultTimeoutRef.current) clearTimeout(pinResultTimeoutRef.current);
+    Keyboard.dismiss(); // que el teclado no tape el resultado
     setPinLoading(true);
     setPinError(null);
     setPinMessage(null);
     try {
       const coords = await getCurrentCoords();
+      // La foto es solo evidencia para revisar despues: si la camara falla,
+      // la marca se registra igual, sin foto.
       let imageBase64: string | undefined;
       if (permission?.granted && cameraRef.current) {
-        const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
-        if (photo?.base64) imageBase64 = `data:image/jpeg;base64,${photo.base64}`;
+        try {
+          const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
+          if (photo?.base64) imageBase64 = `data:image/jpeg;base64,${photo.base64}`;
+        } catch {
+          imageBase64 = undefined;
+        }
       }
-      const result = await kioskClock({ ...coords, identifier, imageBase64 });
-      setPinMessage(`${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString()}`);
+      const result = await kioskClock({ ...coords, identifier: value, imageBase64 });
+      setPinMessage(
+        `${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`,
+      );
       setIdentifier('');
     } catch (err) {
-      setPinError((err as Error).message);
+      setPinError((err as Error).message || 'No se pudo registrar. Intenta de nuevo.');
     } finally {
       setPinLoading(false);
+      pinSubmittingRef.current = false;
+      // El resultado no se queda pegado para la siguiente persona.
+      pinResultTimeoutRef.current = setTimeout(() => {
+        setPinMessage(null);
+        setPinError(null);
+      }, PIN_RESULT_VISIBLE_MS);
     }
   }
 
@@ -364,19 +444,30 @@ export default function KioskScreen({ navigation }: Props) {
 
           <View style={styles.pinFormColumn}>
             <View>
-              <Text style={styles.fieldLabel}>Cedula, codigo de empleado o PIN</Text>
+              <View style={styles.fieldLabelRow}>
+                <Text style={styles.fieldLabel}>Cedula, codigo de empleado o PIN</Text>
+                <TouchableOpacity
+                  style={styles.keyboardToggle}
+                  onPress={toggleKeyboard}
+                  hitSlop={8}
+                  accessibilityLabel={lettersKeyboard ? 'Usar teclado numerico' : 'Usar teclado de letras'}
+                >
+                  <Text style={styles.keyboardToggleText}>{lettersKeyboard ? '123' : 'ABC'}</Text>
+                </TouchableOpacity>
+              </View>
               <TextInput
+                ref={identifierInputRef}
                 style={styles.inputCompact}
                 placeholder="Digita cualquiera de los 3"
                 placeholderTextColor="#94a3b8"
                 value={identifier}
                 onChangeText={setIdentifier}
                 autoCapitalize="characters"
+                autoCorrect={false}
                 // Numerico por defecto (cedula y PIN son numericos, el caso
-                // mas comun) -- en Android el propio teclado trae un boton
-                // para pasar a letras si hace falta para un codigo como
-                // "ADM001".
-                keyboardType="numeric"
+                // mas comun). El teclado numerico de Android no tiene letras:
+                // para un codigo como "ADM001" se cambia con el boton "ABC".
+                keyboardType={lettersKeyboard ? 'default' : 'numeric'}
                 returnKeyType="done"
                 onSubmitEditing={submitPin}
               />
@@ -398,7 +489,7 @@ export default function KioskScreen({ navigation }: Props) {
             <TouchableOpacity
               style={styles.submitCompact}
               onPress={submitPin}
-              disabled={pinLoading || !identifier}
+              disabled={pinLoading || !identifier.trim()}
             >
               {pinLoading ? <ActivityIndicator color="white" /> : <Text style={styles.submitText}>Registrar</Text>}
             </TouchableOpacity>
@@ -527,6 +618,9 @@ const styles = StyleSheet.create({
   // a medida que puede no quedar claro que se puede tocar.
   pinFormColumn: { width: '100%', gap: 8 },
   fieldLabel: { fontSize: 11, color: '#64748b', marginBottom: 2, fontWeight: '600' },
+  fieldLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
+  keyboardToggle: { borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 6, paddingVertical: 2, paddingHorizontal: 8, backgroundColor: 'white' },
+  keyboardToggleText: { fontSize: 11, fontWeight: '700', color: '#334155' },
   inputCompact: {
     width: '100%',
     borderWidth: 1,

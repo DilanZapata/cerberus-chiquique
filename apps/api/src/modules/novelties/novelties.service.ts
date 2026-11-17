@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
+  applyOvertimeAuthorization,
   calculateDailyNovelties,
   getIsoWeekKey,
   isColombianHoliday,
@@ -29,6 +30,7 @@ import { addDays, combineDateAndTime, startOfLocalDay, timeToHHmm } from '../../
 import { findShiftMarks } from '../../common/utils/shift-marks.util';
 import { resolveActiveCycleWeek } from '../../common/utils/rotating-schedule.util';
 import { PayrollConfigService } from '../payroll-config/payroll-config.service';
+import { MailerService } from '../notifications/mailer.service';
 
 // @cerberus/shared-types define sus propios enums (consumidos tambien por web/mobile,
 // que no tienen el cliente de Prisma). Aqui, en el limite con la base de datos,
@@ -79,13 +81,6 @@ const SUNDAY_HOLIDAY_CODES: PrismaNoveltyCode[] = ['DDCOF', 'DNCOF', 'HEFD', 'HE
 // Conceptos de hora extra que acompanan a HORA_EXTRA_PENDIENTE y heredan su
 // decision (aprobada/rechazada) -- ver persist().
 const OVERTIME_DETAIL_CODES: PrismaNoveltyCode[] = ['HEOD', 'HEON', 'HEFD', 'HEFN'] as PrismaNoveltyCode[];
-const OVERTIME_RESULT_CODES = new Set<NoveltyCode>([
-  NoveltyCode.HEOD,
-  NoveltyCode.HEON,
-  NoveltyCode.HEFD,
-  NoveltyCode.HEFN,
-  NoveltyCode.HORA_EXTRA_PENDIENTE,
-]);
 
 export interface ShiftResolution {
   plannedShift?: PlannedShiftWindow;
@@ -134,9 +129,12 @@ type ScheduleWithDetails = {
 
 @Injectable()
 export class NoveltiesService {
+  private readonly logger = new Logger(NoveltiesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly payrollConfigService: PayrollConfigService,
+    private readonly mailerService: MailerService,
   ) {}
 
   /**
@@ -156,8 +154,24 @@ export class NoveltiesService {
       return this.persistIncidenceCoverage(userId, workDate, coveringIncidence);
     }
 
-    const result = await this.computeDayResult(userId, date);
-    await this.persist(userId, workDate, result);
+    // La autorizacion de horas extra del dia (si existe) decide cuanto de lo
+    // trabajado queda aprobado: se paga min(autorizado, trabajado) y el
+    // excedente queda pendiente (o rechazado). Se aplica en CADA calculo, asi
+    // la decision sobrevive a cualquier recalculo (ej. corregir una marca).
+    const authorization = await this.prisma.overtimeAuthorization.findUnique({
+      where: { userId_workDate: { userId, workDate: date } },
+    });
+    const outcome = applyOvertimeAuthorization(
+      await this.computeDayResult(userId, date),
+      authorization
+        ? { authorizedHours: authorization.authorizedHours.toNumber(), excessRejected: authorization.excessRejected }
+        : null,
+    );
+    const result = outcome.result;
+    await this.persist(userId, workDate, result, authorization);
+    if (authorization) {
+      await this.notifyOvertimeExcess(userId, workDate, authorization, outcome.workedOvertimeHours, outcome.pendingHours);
+    }
 
     // Incluye HEFD/HEFN (extra festiva/dominical): sin ellos, un trabajador
     // sin el domingo como dia laborable regular nunca activaba este chequeo
@@ -182,6 +196,12 @@ export class NoveltiesService {
     }
 
     return result;
+  }
+
+  /** Corta el paso si el empleado no es de la empresa de quien hace la peticion. */
+  async assertUserInCompany(userId: string, companyId: string): Promise<void> {
+    const user = await this.prisma.user.findFirst({ where: { id: userId, companyId }, select: { id: true } });
+    if (!user) throw new NotFoundException('Empleado no encontrado en tu empresa.');
   }
 
   /** Recalcula un rango de dias en orden cronologico (ej. tras editar una marca antigua). */
@@ -745,25 +765,13 @@ export class NoveltiesService {
     return findShiftMarks(this.prisma, userId, date);
   }
 
-  private async persist(userId: string, workDate: string, result: DailyCalculationResult): Promise<void> {
+  private async persist(
+    userId: string,
+    workDate: string,
+    result: DailyCalculationResult,
+    authorization: { authorizedById: string | null; updatedAt: Date } | null = null,
+  ): Promise<void> {
     const date = new Date(`${workDate}T00:00:00`);
-
-    // Recalcular un dia borra y recrea sus novedades SISTEMA (y, en cascada,
-    // la solicitud de hora extra). Si esas horas extra YA habian sido
-    // aprobadas o rechazadas por un supervisor, se guarda esa decision para
-    // volver a aplicarla mas abajo cuando el recalculo arroja exactamente
-    // las mismas horas -- sin esto, corregir cualquier marca del dia (o
-    // cualquier recalculo) devolvia a PENDIENTE una hora extra ya decidida.
-    const previousDecision = await this.prisma.novelty.findFirst({
-      where: {
-        userId,
-        workDate: date,
-        code: toPrismaNoveltyCode(NoveltyCode.HORA_EXTRA_PENDIENTE),
-        origin: toPrismaNoveltyOrigin(NoveltyOrigin.SISTEMA),
-        status: { in: [PrismaNoveltyStatus.APROBADA, PrismaNoveltyStatus.RECHAZADA] },
-      },
-      include: { overtimeApprovals: { orderBy: { createdAt: 'desc' }, take: 1 } },
-    });
 
     await this.prisma.$transaction([
       this.prisma.novelty.deleteMany({
@@ -801,59 +809,28 @@ export class NoveltiesService {
       }),
     ]);
 
+    // Las partes de hora extra ya decididas por la autorizacion del dia
+    // (aprobadas o rechazadas) quedan firmadas por quien autorizo.
+    if (authorization) {
+      await this.prisma.novelty.updateMany({
+        where: {
+          userId,
+          workDate: date,
+          code: { in: OVERTIME_DETAIL_CODES },
+          origin: toPrismaNoveltyOrigin(NoveltyOrigin.SISTEMA),
+          status: { in: [PrismaNoveltyStatus.APROBADA, PrismaNoveltyStatus.RECHAZADA] },
+        },
+        data: { reviewedById: authorization.authorizedById, reviewedAt: authorization.updatedAt },
+      });
+    }
+
+    // Lo que siga pendiente alimenta el panel de aprobacion.
     const pendingOvertime = result.novelties.find((n) => n.code === NoveltyCode.HORA_EXTRA_PENDIENTE);
     if (pendingOvertime && pendingOvertime.status === NoveltyStatus.PENDIENTE) {
       const created = await this.prisma.novelty.findFirst({
         where: { userId, workDate: date, code: toPrismaNoveltyCode(NoveltyCode.HORA_EXTRA_PENDIENTE) },
       });
-      const previousApproval = previousDecision?.overtimeApprovals[0];
-      const sameHoursAsDecided =
-        !!previousDecision && !!previousApproval && previousApproval.requestedHours.toNumber() === pendingOvertime.hours;
-
-      if (created && previousDecision && previousApproval && sameHoursAsDecided) {
-        // Mismas horas extra que ya se habian decidido: se conserva la decision.
-        const decidedStatus = previousDecision.status;
-        await this.prisma.$transaction([
-          this.prisma.novelty.update({
-            where: { id: created.id },
-            data: {
-              status: decidedStatus,
-              hours: previousDecision.hours,
-              reviewedById: previousDecision.reviewedById,
-              reviewedAt: previousDecision.reviewedAt,
-            },
-          }),
-          this.prisma.novelty.updateMany({
-            where: {
-              userId,
-              workDate: date,
-              code: { in: OVERTIME_DETAIL_CODES },
-              status: PrismaNoveltyStatus.PENDIENTE,
-            },
-            data: {
-              status: decidedStatus,
-              reviewedById: previousDecision.reviewedById,
-              reviewedAt: previousDecision.reviewedAt,
-            },
-          }),
-          this.prisma.overtimeApproval.create({
-            data: {
-              noveltyId: created.id,
-              requestedHours: previousApproval.requestedHours,
-              approvedHours: previousApproval.approvedHours,
-              status: previousApproval.status,
-              decidedById: previousApproval.decidedById,
-              decidedAt: previousApproval.decidedAt,
-              decisionNotes: previousApproval.decisionNotes,
-            },
-          }),
-        ]);
-        const decided = decidedStatus as unknown as NoveltyStatus;
-        for (const novelty of result.novelties) {
-          if (novelty.status === NoveltyStatus.PENDIENTE && OVERTIME_RESULT_CODES.has(novelty.code)) novelty.status = decided;
-        }
-        result.hasPendingOvertime = false;
-      } else if (created) {
+      if (created) {
         await this.prisma.overtimeApproval.create({
           data: {
             noveltyId: created.id,
@@ -862,6 +839,79 @@ export class NoveltiesService {
           },
         });
       }
+    }
+  }
+
+  /**
+   * Si el empleado trabajo MAS horas extra de las que se le autorizaron, el
+   * excedente queda pendiente y se le avisa por correo a quien autorizo.
+   * Un solo aviso por cada valor de excedente (no en cada recalculo). Nunca
+   * lanza: un fallo de correo no puede tumbar el registro de una marca.
+   */
+  private async notifyOvertimeExcess(
+    userId: string,
+    workDate: string,
+    authorization: { id: string; authorizedHours: { toNumber(): number }; authorizedById: string | null; excessNotifiedHours: { toNumber(): number } },
+    workedOvertimeHours: number,
+    pendingHours: number,
+  ): Promise<void> {
+    try {
+      const authorizedHours = authorization.authorizedHours.toNumber();
+      const alreadyNotified = authorization.excessNotifiedHours.toNumber();
+      if (pendingHours === alreadyNotified) return;
+
+      // Se anota primero el excedente vigente (0 lo "rearma" para un aviso futuro).
+      await this.prisma.overtimeAuthorization.update({
+        where: { id: authorization.id },
+        data: { excessNotifiedHours: pendingHours },
+      });
+      if (pendingHours <= 0 || authorizedHours <= 0 || !authorization.authorizedById) return;
+
+      const [employee, authorizer] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: userId }, select: { fullName: true, employeeCode: true, companyId: true } }),
+        this.prisma.user.findUnique({ where: { id: authorization.authorizedById }, select: { fullName: true, email: true } }),
+      ]);
+      if (!employee || !authorizer?.email) return;
+      const settings = await this.prisma.emailSettings.findUnique({
+        where: { companyId: employee.companyId },
+        select: { attendanceAlertsEnabled: true },
+      });
+      if (!settings?.attendanceAlertsEnabled) return;
+
+      const hoursLabel = (hours: number) => `${hours} ${hours === 1 ? 'hora' : 'horas'}`;
+      const [year, month, day] = workDate.split('-');
+      const subject = `Cerberus: ${employee.fullName} trabajo mas horas extra de las autorizadas`;
+      const html = `
+        <h2>Horas extra por autorizar</h2>
+        <p>Hola ${authorizer.fullName},</p>
+        <p>Autorizaste <strong>${hoursLabel(authorizedHours)} extra</strong> para <strong>${employee.fullName}</strong>
+        (${employee.employeeCode}) el ${day}/${month}/${year}, pero trabajo <strong>${hoursLabel(workedOvertimeHours)} extra</strong>.</p>
+        <p>Tienes <strong>${hoursLabel(pendingHours)} ${pendingHours === 1 ? 'pendiente' : 'pendientes'} por autorizar</strong>.
+        Entra a la app Cerberus Managers (o al panel web, Horas Extra) para autorizarlas o rechazarlas.</p>
+        <p>Mientras no se autoricen, esas horas no se pagan.</p>
+      `;
+      try {
+        await this.mailerService.sendMail(employee.companyId, { subject, html, to: [authorizer.email] });
+      } catch (error) {
+        // No se pudo enviar (SMTP caido o sin configurar): se deja como "no
+        // avisado" para reintentar en el proximo recalculo del dia.
+        await this.prisma.overtimeAuthorization.update({
+          where: { id: authorization.id },
+          data: { excessNotifiedHours: alreadyNotified },
+        });
+        throw error;
+      }
+      await this.prisma.notificationLog.create({
+        data: {
+          companyId: employee.companyId,
+          subject,
+          recipients: [authorizer.email],
+          payloadSummary: { type: 'OVERTIME_EXCESS', userId, workDate, authorizedHours, workedOvertimeHours, pendingHours },
+          status: 'SENT',
+        },
+      });
+    } catch (error) {
+      this.logger.error(`No se pudo avisar el excedente de horas extra (usuario ${userId}, ${workDate}): ${(error as Error).message}`);
     }
   }
 }

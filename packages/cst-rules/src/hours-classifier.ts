@@ -43,10 +43,15 @@ export function mergeBuckets(target: HourBuckets, source: HourBuckets): void {
 export function classifySegments(
   segments: WorkSegment[],
   remainingOrdinaryMinutes: number,
-): { buckets: HourBuckets; ordinaryMinutesConsumed: number } {
+): { buckets: HourBuckets; ordinaryMinutesConsumed: number; overtimeOrder: Array<keyof HourBuckets> } {
   const buckets = emptyBuckets();
   let remaining = Math.max(0, remainingOrdinaryMinutes);
   let consumed = 0;
+  // Orden cronologico en que cada concepto de hora extra empezo a causarse.
+  const overtimeOrder: Array<keyof HourBuckets> = [];
+  const noteOvertime = (key: keyof HourBuckets, hours: number) => {
+    if (hours > 0 && !overtimeOrder.includes(key)) overtimeOrder.push(key);
+  };
 
   for (const segment of segments) {
     const totalMinutes = (segment.end.getTime() - segment.start.getTime()) / 60000;
@@ -64,18 +69,22 @@ export function classifySegments(
       if (segment.isNight) {
         buckets.DNCOF += ordinaryHours;
         buckets.HEFN += overtimeHours;
+        noteOvertime('HEFN', overtimeHours);
       } else {
         buckets.DDCOF += ordinaryHours;
         buckets.HEFD += overtimeHours;
+        noteOvertime('HEFD', overtimeHours);
       }
     } else if (segment.isNight) {
       buckets.RNO += ordinaryHours;
       buckets.HEON += overtimeHours;
+      noteOvertime('HEON', overtimeHours);
     } else {
       buckets.ordinaryDiurnoHours += ordinaryHours;
       buckets.HEOD += overtimeHours;
+      noteOvertime('HEOD', overtimeHours);
     }
   }
 
-  return { buckets, ordinaryMinutesConsumed: consumed };
+  return { buckets, ordinaryMinutesConsumed: consumed, overtimeOrder };
 }

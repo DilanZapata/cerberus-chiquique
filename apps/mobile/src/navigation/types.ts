@@ -4,6 +4,8 @@ export type RootStackParamList = {
   EmployeeClock: undefined;
   MyHistory: undefined;
   AdminDashboard: undefined;
+  AdminOvertime: undefined;
+  AdminOvertimeAuthorize: undefined;
   AdminEmployeesList: undefined;
   AdminEmployeeForm: { employeeId?: string } | undefined;
   AdminFaceEnroll: { employeeId: string; employeeName: string };

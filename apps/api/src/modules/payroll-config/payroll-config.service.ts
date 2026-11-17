@@ -1,3 +1,4 @@
+import { UserRole } from '@prisma/client';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PayrollConfigParams } from '@cerberus/shared-types';
@@ -124,6 +125,14 @@ export class PayrollConfigService {
 
   async updateSettings(companyId: string, dto: UpdatePayrollSettingsDto) {
     await this.getOrCreateSettings(companyId);
-    return this.prisma.payrollSettings.update({ where: { companyId }, data: dto });
+    const data = { ...dto };
+    if (data.overtimeApproverRoles) {
+      // ADMIN siempre puede autorizar: si no, la empresa podria quedarse sin nadie habilitado.
+      data.overtimeApproverRoles = [
+        UserRole.ADMIN,
+        ...data.overtimeApproverRoles.filter((role) => role !== UserRole.ADMIN),
+      ];
+    }
+    return this.prisma.payrollSettings.update({ where: { companyId }, data });
   }
 }

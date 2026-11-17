@@ -279,8 +279,9 @@ export class TimeLogsService {
    * su misma empresa.
    */
   async getHistory(currentUser: AuthenticatedUser, requestedUserId: string | undefined, from: string, to: string) {
-    const targetUserId = currentUser.role === 'EMPLOYEE' ? currentUser.id : requestedUserId;
-    if (!targetUserId) throw new BadRequestException('userId es requerido');
+    // Sin userId se devuelve el historial propio (tambien para ADMIN/HR/SUPERVISOR
+    // que marcan su asistencia desde la app Staff).
+    const targetUserId = currentUser.role === 'EMPLOYEE' ? currentUser.id : (requestedUserId ?? currentUser.id);
 
     const user = await this.prisma.user.findFirst({ where: { id: targetUserId, companyId: currentUser.companyId } });
     if (!user) throw new NotFoundException(`Empleado ${targetUserId} no encontrado`);

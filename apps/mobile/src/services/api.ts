@@ -13,10 +13,13 @@ export class ApiError extends Error {
   secondsRemaining?: number;
 }
 
+const NO_CONNECTION_MESSAGE = 'Sin conexion con el servidor. Revisa el internet e intenta de nuevo.';
+
 async function handle(res: Response) {
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    const err = new ApiError(body?.message ?? `Error ${res.status}`);
+    const message = Array.isArray(body?.message) ? body.message[0] : body?.message;
+    const err = new ApiError(message ?? `Error ${res.status}`);
     if (typeof body?.secondsRemaining === 'number') err.secondsRemaining = body.secondsRemaining;
     throw err;
   }
@@ -38,7 +41,7 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
     if ((err as Error).name === 'AbortError') {
       throw new ApiError('El servidor no respondio a tiempo. Intenta de nuevo.');
     }
-    throw err;
+    throw new ApiError(NO_CONNECTION_MESSAGE);
   } finally {
     clearTimeout(timer);
   }
@@ -49,7 +52,12 @@ async function apiRequest(token: string, path: string, options: RequestInit = {}
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${token}`);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch {
+    throw new ApiError(NO_CONNECTION_MESSAGE);
+  }
   return handle(res);
 }
 
@@ -133,11 +141,11 @@ export interface LoginResult {
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {
-  const res = await fetch(`${API_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_URL}/auth/login`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) },
+    KIOSK_REQUEST_TIMEOUT_MS,
+  );
   return handle(res);
 }
 
@@ -152,11 +160,11 @@ export async function mobileClock(
   accessToken: string,
   coords: { latitude: number; longitude: number; imageBase64?: string },
 ): Promise<MobileClockResult> {
-  const res = await fetch(`${API_URL}/time-logs/mobile-clock`, {
+  const res = await fetchWithTimeout(`${API_URL}/time-logs/mobile-clock`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify(coords),
-  });
+  }, 20000);
   return handle(res);
 }
 
@@ -289,14 +297,21 @@ export function getAttendance(token: string, date: string): Promise<AttendanceRo
   return apiRequest(token, `/dashboard/attendance?date=${date}`);
 }
 
-// ---- Horas extra (mismo endpoint que ya usa el panel web) ----
+// ---- Horas extra (mismos endpoints que usa el panel web) ----
 
 export interface PendingOvertime {
   id: string;
+  /** Horas extra que siguen pendientes de decidir. */
   requestedHours: string;
   status: string;
   createdAt: string;
-  novelty: { workDate: string; hours: string; notes: string | null; user: { fullName: string; employeeCode: string } };
+  /** Lo que ya se habia autorizado para ese dia (0 si nada). */
+  authorizedHours: number;
+  authorizedByName: string | null;
+  /** Horas extra que realmente trabajo ese dia. */
+  workedHours: number;
+  pendingHours: number;
+  novelty: { userId: string; workDate: string; hours: string; notes: string | null; user: { fullName: string; employeeCode: string } };
 }
 
 export function getPendingOvertime(token: string): Promise<PendingOvertime[]> {
@@ -305,6 +320,41 @@ export function getPendingOvertime(token: string): Promise<PendingOvertime[]> {
 
 export function reviewOvertime(token: string, id: string, body: { status: 'APROBADA' | 'RECHAZADA'; approvedHours?: number; notes?: string }) {
   return apiRequest(token, `/novelties/overtime/${id}/review`, { method: 'POST', body: JSON.stringify(body) });
+}
+
+/** Si el rol del usuario esta habilitado por su empresa para autorizar horas extra. */
+export function getOvertimePermissions(token: string): Promise<{ canApprove: boolean; role: string; approverRoles: string[] }> {
+  return apiRequest(token, '/novelties/overtime/permissions');
+}
+
+/** Autorizacion de horas extra de una persona en un dia, con lo que realmente trabajo. */
+export interface OvertimeAuthorization {
+  userId: string;
+  fullName: string;
+  employeeCode: string;
+  workDate: string;
+  authorizedHours: number;
+  excessRejected: boolean;
+  authorizedByName: string | null;
+  notes: string | null;
+  updatedAt: string | null;
+  workedHours: number;
+  /** Lo que se paga: lo menor entre lo autorizado y lo trabajado. */
+  approvedHours: number;
+  pendingHours: number;
+  rejectedHours: number;
+}
+
+/** "A esta persona, este dia, le autorizo N horas extra" (reemplaza la autorizacion anterior de ese dia). */
+export function authorizeOvertime(
+  token: string,
+  body: { userId: string; workDate: string; hours: number; notes?: string },
+): Promise<OvertimeAuthorization> {
+  return apiRequest(token, '/novelties/overtime/authorizations', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getOvertimeAuthorizations(token: string, from: string, to: string): Promise<OvertimeAuthorization[]> {
+  return apiRequest(token, `/novelties/overtime/authorizations?from=${from}&to=${to}`);
 }
 
 // ---- Historial de marcas (coordenadas + foto de evidencia) ----

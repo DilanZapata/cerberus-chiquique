@@ -2,12 +2,14 @@ import { ActivityIndicator, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { RootStackParamList } from './types';
 import { useAuth } from '../context/AuthContext';
-import { isAdminRole } from '../services/auth';
+import { IS_MANAGERS } from '../config/variant';
 import LoginScreen from '../screens/LoginScreen';
 import KioskScreen from '../screens/KioskScreen';
 import EmployeeScreen from '../screens/EmployeeScreen';
 import MyHistoryScreen from '../screens/MyHistoryScreen';
 import AdminDashboardScreen from '../screens/admin/AdminDashboardScreen';
+import OvertimeApprovalScreen from '../screens/admin/OvertimeApprovalScreen';
+import OvertimeAuthorizeScreen from '../screens/admin/OvertimeAuthorizeScreen';
 import EmployeesListScreen from '../screens/admin/EmployeesListScreen';
 import EmployeeFormScreen from '../screens/admin/EmployeeFormScreen';
 import FaceEnrollScreen from '../screens/admin/FaceEnrollScreen';
@@ -16,14 +18,18 @@ import EmployeeHistoryScreen from '../screens/admin/EmployeeHistoryScreen';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 /**
- * El stack de pantallas cambia segun el estado de sesion: sin sesion, la app
- * abre DIRECTO en el kiosco de reconocimiento facial (terminal compartida,
- * sin login personal) -- es la pantalla inicial, no una opcion entre otras.
- * Iniciar sesion sigue disponible (boton discreto dentro del propio
- * KioskScreen) para quien necesite el panel admin o el marcaje personal.
- * Con sesion, el rol decide si se entra al panel admin o al marcaje
- * personal de empleado. React Navigation reinicia solo al stack activo
- * cuando cambia la lista de pantallas.
+ * Las pantallas dependen de cual app es (ver src/config/variant.ts) y de si
+ * hay sesion:
+ *
+ *  - Cerberus Staff: sin sesion abre DIRECTO en el kiosco de marcacion
+ *    (terminal compartida, sin login personal); "Iniciar sesion" lleva al
+ *    marcaje personal y al historial propio, sea cual sea el rol.
+ *  - Cerberus Managers: sin sesion solo hay login (que rechaza a quien no
+ *    administra); con sesion, el panel: asistencia del dia, horas extra,
+ *    empleados y rostros.
+ *
+ * React Navigation reinicia solo al stack activo cuando cambia la lista de
+ * pantallas.
  */
 export default function RootNavigator() {
   const { session, loading } = useAuth();
@@ -36,24 +42,40 @@ export default function RootNavigator() {
     );
   }
 
+  if (IS_MANAGERS) {
+    return (
+      <Stack.Navigator>
+        {!session ? (
+          <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
+        ) : (
+          <>
+            <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} options={{ title: 'Cerberus Managers' }} />
+            <Stack.Screen name="AdminOvertime" component={OvertimeApprovalScreen} options={{ title: 'Horas extra' }} />
+            <Stack.Screen
+              name="AdminOvertimeAuthorize"
+              component={OvertimeAuthorizeScreen}
+              options={{ title: 'Autorizar horas extra' }}
+            />
+            <Stack.Screen name="AdminEmployeesList" component={EmployeesListScreen} options={{ title: 'Empleados' }} />
+            <Stack.Screen name="AdminEmployeeForm" component={EmployeeFormScreen} options={{ title: 'Empleado' }} />
+            <Stack.Screen name="AdminFaceEnroll" component={FaceEnrollScreen} options={{ title: 'Enrolar rostro' }} />
+            <Stack.Screen
+              name="AdminEmployeeHistory"
+              component={EmployeeHistoryScreen}
+              options={({ route }) => ({ title: `Historial de ${route.params.employeeName}` })}
+            />
+          </>
+        )}
+      </Stack.Navigator>
+    );
+  }
+
   return (
     <Stack.Navigator>
       {!session ? (
         <>
           <Stack.Screen name="Kiosk" component={KioskScreen} options={{ headerShown: false }} />
           <Stack.Screen name="Login" component={LoginScreen} options={{ title: 'Iniciar sesion' }} />
-        </>
-      ) : isAdminRole(session.user.role) ? (
-        <>
-          <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} options={{ title: 'Dashboard' }} />
-          <Stack.Screen name="AdminEmployeesList" component={EmployeesListScreen} options={{ title: 'Empleados' }} />
-          <Stack.Screen name="AdminEmployeeForm" component={EmployeeFormScreen} options={{ title: 'Empleado' }} />
-          <Stack.Screen name="AdminFaceEnroll" component={FaceEnrollScreen} options={{ title: 'Enrolar rostro' }} />
-          <Stack.Screen
-            name="AdminEmployeeHistory"
-            component={EmployeeHistoryScreen}
-            options={({ route }) => ({ title: `Historial de ${route.params.employeeName}` })}
-          />
         </>
       ) : (
         <>

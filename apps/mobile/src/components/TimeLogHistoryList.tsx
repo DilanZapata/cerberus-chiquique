@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import { getTimeLogHistory, photoUrl, TimeLogHistoryEntry } from '../services/api';
+import { addDaysISO, localDateISO } from '../utils/dates';
 
 const LOG_TYPE_LABELS: Record<string, string> = {
   CHECK_IN: 'Entrada',
@@ -19,14 +20,14 @@ const SOURCE_LABELS: Record<string, string> = {
   MANUAL: 'Carga manual',
 };
 
+// Fechas LOCALES del telefono (toISOString daria la de UTC: despues de las
+// 7 p. m. en Colombia el rango se correria un dia).
 function daysAgoISO(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return addDaysISO(localDateISO(), -days);
 }
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateISO();
 }
 
 /**

@@ -78,6 +78,13 @@ export interface DailyCalculationResult {
   totalOvertimeHours: number;
   totalWorkedHours: number;
   hasPendingOvertime: boolean;
+  /**
+   * Conceptos de hora extra en el orden cronologico en que se empezaron a
+   * causar ese dia (ej. [HEOD, HEON] si primero hubo extra diurna y luego
+   * nocturna). Se usa para aplicar una autorizacion parcial a las PRIMERAS
+   * horas extra trabajadas, no a un concepto arbitrario.
+   */
+  overtimeOrder?: NoveltyCode[];
 }
 
 /** Fila del reporte de nomina exportable a Excel (seccion 3 del brief). */

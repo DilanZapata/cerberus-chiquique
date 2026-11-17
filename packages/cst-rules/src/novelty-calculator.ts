@@ -148,6 +148,7 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
   const buckets = emptyBuckets();
   let ordinaryMinutesConsumedToday = 0;
   let totalWorkedMinutes = 0;
+  const overtimeOrder: NoveltyCode[] = [];
 
   for (const segment of lunchResolution.workedSegments) {
     let segmentOrdinaryCap = remainingCapForDay;
@@ -162,10 +163,14 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
       payrollConfig.dayStartTime,
       payrollConfig.nightStartTime,
     );
-    const { buckets: segmentBuckets, ordinaryMinutesConsumed } = classifySegments(
+    const { buckets: segmentBuckets, ordinaryMinutesConsumed, overtimeOrder: segmentOvertimeOrder } = classifySegments(
       homogeneousSegments,
       segmentOrdinaryCap,
     );
+    for (const key of segmentOvertimeOrder) {
+      const code = key as unknown as NoveltyCode;
+      if (!overtimeOrder.includes(code)) overtimeOrder.push(code);
+    }
     remainingCapForDay -= ordinaryMinutesConsumed;
     ordinaryMinutesConsumedToday += ordinaryMinutesConsumed;
     mergeBuckets(buckets, segmentBuckets);
@@ -247,5 +252,6 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
     totalOvertimeHours: totalOvertimeHoursToday,
     totalWorkedHours: round(totalWorkedMinutes / 60),
     hasPendingOvertime,
+    overtimeOrder,
   };
 }
