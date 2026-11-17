@@ -896,6 +896,9 @@ export interface TimeLogHistoryEntry {
   longitude: number | null;
   gpsValid: boolean | null;
   photoUrl: string | null;
+  /** Foto comparada con el rostro enrolado: coincide, no coincide, o la persona no tiene rostro enrolado (null = sin verificar). */
+  faceCheck: 'MATCH' | 'MISMATCH' | 'NOT_ENROLLED' | null;
+  faceDistance: number | null;
   workSite: string | null;
 }
 

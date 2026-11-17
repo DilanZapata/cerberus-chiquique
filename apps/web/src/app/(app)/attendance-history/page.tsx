@@ -171,6 +171,27 @@ export default function AttendanceHistoryPage() {
                         <ImageIcon size={16} />
                       </span>
                     )}
+                    {row.faceCheck === 'MISMATCH' && (
+                      <div className="mt-1">
+                        <Badge tone="critical" title="El rostro de la foto no coincide con el rostro enrolado de este empleado">
+                          rostro no coincide
+                        </Badge>
+                      </div>
+                    )}
+                    {row.faceCheck === 'MATCH' && (
+                      <div className="mt-1">
+                        <Badge tone="good" title="El rostro de la foto coincide con el rostro enrolado">
+                          rostro verificado
+                        </Badge>
+                      </div>
+                    )}
+                    {row.faceCheck === 'NOT_ENROLLED' && (
+                      <div className="mt-1">
+                        <Badge tone="neutral" title="Este empleado no tiene rostro enrolado: no se pudo comparar la foto">
+                          sin rostro enrolado
+                        </Badge>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

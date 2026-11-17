@@ -15,6 +15,23 @@ const MODELS_PATH = path.join(process.cwd(), 'models');
 /** Distancia por debajo de la cual dos rostros se consideran la misma persona (convencion de face-api). */
 const MATCH_THRESHOLD = 0.5;
 
+/**
+ * Umbral para VERIFICAR a una persona ya identificada por su cedula/codigo
+ * (comparacion 1 a 1 contra su propio rostro enrolado). Es el umbral
+ * estandar de face-api y es un poco mas tolerante que MATCH_THRESHOLD (que
+ * busca entre todos los rostros de la empresa): aqui un falso "no coincide"
+ * genera una alerta injusta por una foto con mala luz.
+ */
+const VERIFY_THRESHOLD = 0.6;
+
+export type FaceCheckStatus = 'MATCH' | 'MISMATCH' | 'NOT_ENROLLED';
+
+export interface FaceVerification {
+  /** null = no se pudo verificar (servicio de rostros no disponible): la marca sigue su curso. */
+  status: FaceCheckStatus | null;
+  distance: number | null;
+}
+
 function euclideanDistance(a: Float32Array | number[], b: Float32Array | number[]): number {
   let sum = 0;
   for (let i = 0; i < a.length; i++) {
@@ -40,6 +57,11 @@ export class FaceRecognitionService implements OnModuleInit {
       await faceapi.nets.faceRecognitionNet.loadFromDisk(MODELS_PATH);
       this.modelsReady = true;
       this.logger.log('Modelos de reconocimiento facial cargados.');
+      // Primera pasada en vacio: la primera deteccion real tarda casi un
+      // segundo mas que las siguientes; asi ese costo no lo paga la primera
+      // persona que marca despues de un reinicio.
+      const warmup = new Canvas(160, 160);
+      await faceapi.detectSingleFace(warmup as never).withFaceLandmarks().withFaceDescriptor();
     } catch (error) {
       this.logger.error(`No se pudieron cargar los modelos de reconocimiento facial: ${(error as Error).message}`);
     }
@@ -53,9 +75,36 @@ export class FaceRecognitionService implements OnModuleInit {
     const image = await loadImage(buffer);
     const detection = await faceapi.detectSingleFace(image as never).withFaceLandmarks().withFaceDescriptor();
     if (!detection) {
-      throw new BadRequestException('No se detecto ningun rostro en la imagen. Intenta con mejor luz y de frente a la camara.');
+      throw new BadRequestException('No se ve ningun rostro en la camara. Ponte de frente, con buena luz, e intenta de nuevo.');
     }
     return detection.descriptor;
+  }
+
+  /**
+   * Verifica la foto de una marca contra el rostro enrolado de UNA persona ya
+   * identificada (por cedula, codigo o PIN).
+   *
+   * - Si en la foto no hay ningun rostro, lanza BadRequestException: sin
+   *   rostro no se registra la marca.
+   * - Si hay rostro, nunca bloquea: devuelve si coincide o no con el
+   *   enrolado, y quien llama decide que hacer (registrar y avisar).
+   *
+   * Lo costoso es encontrar el rostro en la foto; compararlo con el enrolado
+   * es instantaneo. Por eso se hace todo de una vez y no "despues".
+   */
+  async verify(userId: string, imageBase64: string): Promise<FaceVerification> {
+    if (!this.modelsReady) {
+      this.logger.warn('Reconocimiento facial no disponible: la marca se registra sin verificar el rostro.');
+      return { status: null, distance: null };
+    }
+    const [descriptor, enrollment] = await Promise.all([
+      this.extractDescriptor(imageBase64),
+      this.prisma.faceEnrollment.findUnique({ where: { userId } }),
+    ]);
+    if (!enrollment) return { status: 'NOT_ENROLLED', distance: null };
+
+    const distance = Math.round(euclideanDistance(descriptor, enrollment.descriptor as number[]) * 1000) / 1000;
+    return { status: distance <= VERIFY_THRESHOLD ? 'MATCH' : 'MISMATCH', distance };
   }
 
   async enroll(userId: string, imageBase64: string, consentText: string) {

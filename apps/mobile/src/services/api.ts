@@ -368,6 +368,8 @@ export interface TimeLogHistoryEntry {
   longitude: number | null;
   gpsValid: boolean | null;
   photoUrl: string | null;
+  /** Foto comparada con el rostro enrolado (null = marca sin verificar). */
+  faceCheck: 'MATCH' | 'MISMATCH' | 'NOT_ENROLLED' | null;
   workSite: string | null;
 }
 

@@ -8,7 +8,7 @@ import { startOfLocalDay } from '../../common/utils/time.util';
 import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { NoveltiesService } from '../novelties/novelties.service';
-import { FaceRecognitionService } from '../face-recognition/face-recognition.service';
+import { FaceRecognitionService, FaceVerification } from '../face-recognition/face-recognition.service';
 import { AttendanceAlertService } from '../notifications/attendance-alert.service';
 import { KioskClockDto } from './dto/kiosk-clock.dto';
 import { KioskFaceClockDto } from './dto/kiosk-face-clock.dto';
@@ -118,7 +118,9 @@ export class KioskService {
     }
 
     const workSite = nearbySites.find((s) => s.companyId === user.companyId)!;
-    return this.registerMark(user, workSite.id, dto.latitude, dto.longitude, dto.imageBase64);
+    // Con cedula/codigo/PIN la foto es obligatoria y debe verse un rostro: se
+    // compara con el rostro enrolado de esa persona (ver registerMark).
+    return this.registerMark(user, workSite, dto.latitude, dto.longitude, dto.imageBase64, { verifyFace: true });
   }
 
   /** Marca la siguiente entrada/salida esperada del empleado, identificado por reconocimiento facial. */
@@ -131,7 +133,7 @@ export class KioskService {
     }
     const companyIds = [...new Set(nearbySites.map((s) => s.companyId))];
 
-    let match: { userId: string } | null = null;
+    let match: { userId: string; distance: number } | null = null;
     for (const companyId of companyIds) {
       match = await this.faceRecognitionService.identify(companyId, dto.imageBase64);
       if (match) break;
@@ -143,7 +145,9 @@ export class KioskService {
     const user = await this.prisma.user.findFirstOrThrow({ where: { id: match.userId, isActive: true } });
     const workSite = nearbySites.find((s) => s.companyId === user.companyId)!;
     // La misma foto que se uso para identificar la persona queda como evidencia del marcaje.
-    return this.registerMark(user, workSite.id, dto.latitude, dto.longitude, dto.imageBase64);
+    return this.registerMark(user, workSite, dto.latitude, dto.longitude, dto.imageBase64, {
+      knownFace: { status: 'MATCH', distance: Math.round(match.distance * 1000) / 1000 },
+    });
   }
 
   /**
@@ -175,13 +179,24 @@ export class KioskService {
     return { recognized: false };
   }
 
+  /**
+   * `options.verifyFace` (marca por cedula/codigo/PIN): exige una foto con un
+   * rostro visible y la compara con el rostro enrolado de la persona. Si no
+   * hay rostro, no se registra nada. Si hay rostro pero NO es el enrolado,
+   * la marca se registra igual (para no frenar la fila) y se avisa por
+   * correo a la empresa, con la foto adjunta.
+   * `options.knownFace` (marca por reconocimiento facial): el rostro ya se
+   * identifico; solo se deja anotado el resultado.
+   */
   private async registerMark(
     user: User,
-    workSiteId: string,
+    workSite: WorkSite,
     latitude: number,
     longitude: number,
-    imageBase64?: string,
+    imageBase64: string | undefined,
+    options: { verifyFace?: boolean; knownFace?: FaceVerification } = {},
   ) {
+    const workSiteId = workSite.id;
     const now = new Date();
     // La interpretacion de la marca (entrada/almuerzo/salida) se basa en el
     // horario REAL asignado al empleado (resolveMarkContext, misma
@@ -209,16 +224,37 @@ export class KioskService {
       });
     }
 
-    // La foto es solo evidencia para revisar despues: si no se puede guardar
-    // (imagen danada, disco lleno), la marca se registra igual, sin foto.
-    let photoUrl: string | undefined;
-    if (imageBase64) {
+    if (options.verifyFace && !imageBase64) {
+      throw new BadRequestException('Se necesita la camara para registrar: permite el uso de la camara y ponte de frente.');
+    }
+
+    // Guardar la foto y buscar el rostro en ella se hacen a la vez, para que
+    // el registro tarde lo minimo. Guardar la foto es "mejor esfuerzo" (si
+    // falla, la marca sigue, sin foto); el rostro si es requisito.
+    const savePhoto = async (): Promise<string | undefined> => {
+      if (!imageBase64) return undefined;
       try {
-        photoUrl = await saveTimeLogPhoto(imageBase64, 'kiosk');
+        return await saveTimeLogPhoto(imageBase64, 'kiosk');
       } catch (error) {
         this.logger.warn(`No se pudo guardar la foto de evidencia de ${user.employeeCode}: ${(error as Error).message}`);
+        return undefined;
       }
+    };
+    const checkFace = async (): Promise<FaceVerification> => {
+      if (options.knownFace) return options.knownFace;
+      if (!options.verifyFace || !imageBase64) return { status: null, distance: null };
+      return this.faceRecognitionService.verify(user.id, imageBase64);
+    };
+    const [photoResult, faceResult] = await Promise.allSettled([savePhoto(), checkFace()]);
+    const photoUrl = photoResult.status === 'fulfilled' ? photoResult.value : undefined;
+    if (faceResult.status === 'rejected') {
+      // Sin rostro en la foto (o imagen ilegible): no se registra nada.
+      if (photoUrl) deleteTimeLogPhoto(photoUrl);
+      throw faceResult.reason instanceof BadRequestException
+        ? faceResult.reason
+        : new BadRequestException('No se pudo leer la foto. Intenta de nuevo, de frente a la camara.');
     }
+    const face = faceResult.value;
 
     try {
       await withUserRegistrationLock(this.prisma, user.id, async (tx) => {
@@ -241,6 +277,8 @@ export class KioskService {
             longitude,
             gpsValid: true, // ya se valido que cae dentro del radio de la sede al identificarla (findNearbyWorkSites)
             photoUrl,
+            faceCheck: face.status,
+            faceDistance: face.distance,
           },
         });
       });
@@ -254,6 +292,17 @@ export class KioskService {
     // el envio del correo no debe demorar ni tumbar la respuesta del kiosco.
     if (resolved.nextLogType === TimeLogType.CHECK_IN) {
       void this.attendanceAlertService.notifyLateArrival(user.id, dayResult, now);
+    }
+    // El rostro de la foto no es el enrolado: la marca ya quedo registrada,
+    // pero se avisa a la empresa (tambien sin `await`, por la misma razon).
+    if (face.status === 'MISMATCH') {
+      void this.attendanceAlertService.notifyFaceMismatch(user.id, {
+        loggedAt: now,
+        logType: resolved.nextLogType,
+        workSiteName: workSite.name,
+        photoUrl: photoUrl ?? null,
+        distance: face.distance,
+      });
     }
 
     return {

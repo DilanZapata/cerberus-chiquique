@@ -90,6 +90,9 @@ export default function TimeLogHistoryList({ userId }: { userId?: string }) {
                   {SOURCE_LABELS[item.source] ?? item.source}
                   {item.workSite ? ` · ${item.workSite}` : ''}
                 </Text>
+                {item.faceCheck === 'MISMATCH' && <Text style={styles.faceMismatch}>El rostro no coincide con el enrolado</Text>}
+                {item.faceCheck === 'MATCH' && <Text style={styles.faceMatch}>Rostro verificado</Text>}
+                {item.faceCheck === 'NOT_ENROLLED' && <Text style={styles.faceNeutral}>Sin rostro enrolado</Text>}
                 {item.latitude !== null && item.longitude !== null && (
                   <TouchableOpacity
                     onPress={() => Linking.openURL(`https://www.google.com/maps?q=${item.latitude},${item.longitude}`)}
@@ -116,6 +119,9 @@ export default function TimeLogHistoryList({ userId }: { userId?: string }) {
 }
 
 const styles = StyleSheet.create({
+  faceMismatch: { fontSize: 12, fontWeight: '700', color: '#b91c1c', marginTop: 2 },
+  faceMatch: { fontSize: 12, color: '#047857', marginTop: 2 },
+  faceNeutral: { fontSize: 12, color: '#64748b', marginTop: 2 },
   container: { flex: 1, backgroundColor: '#f8fafc' },
   subtitle: { fontSize: 12, color: '#64748b', paddingHorizontal: 16, paddingTop: 12 },
   error: { color: '#b91c1c', textAlign: 'center', marginTop: 12 },

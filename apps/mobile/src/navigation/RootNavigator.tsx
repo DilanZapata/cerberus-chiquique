@@ -5,8 +5,6 @@ import { useAuth } from '../context/AuthContext';
 import { IS_MANAGERS } from '../config/variant';
 import LoginScreen from '../screens/LoginScreen';
 import KioskScreen from '../screens/KioskScreen';
-import EmployeeScreen from '../screens/EmployeeScreen';
-import MyHistoryScreen from '../screens/MyHistoryScreen';
 import AdminDashboardScreen from '../screens/admin/AdminDashboardScreen';
 import OvertimeApprovalScreen from '../screens/admin/OvertimeApprovalScreen';
 import OvertimeAuthorizeScreen from '../screens/admin/OvertimeAuthorizeScreen';
@@ -21,9 +19,8 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
  * Las pantallas dependen de cual app es (ver src/config/variant.ts) y de si
  * hay sesion:
  *
- *  - Cerberus Staff: sin sesion abre DIRECTO en el kiosco de marcacion
- *    (terminal compartida, sin login personal); "Iniciar sesion" lleva al
- *    marcaje personal y al historial propio, sea cual sea el rol.
+ *  - Cerberus Staff: solo el kiosco de registro de asistencia (terminal
+ *    compartida). No tiene inicio de sesion.
  *  - Cerberus Managers: sin sesion solo hay login (que rechaza a quien no
  *    administra); con sesion, el panel: asistencia del dia, horas extra,
  *    empleados y rostros.
@@ -70,19 +67,11 @@ export default function RootNavigator() {
     );
   }
 
+  // Cerberus Staff es solo para registrar asistencia: una unica pantalla, sin
+  // inicio de sesion (una sesion guardada por una version anterior se ignora).
   return (
     <Stack.Navigator>
-      {!session ? (
-        <>
-          <Stack.Screen name="Kiosk" component={KioskScreen} options={{ headerShown: false }} />
-          <Stack.Screen name="Login" component={LoginScreen} options={{ title: 'Iniciar sesion' }} />
-        </>
-      ) : (
-        <>
-          <Stack.Screen name="EmployeeClock" component={EmployeeScreen} options={{ title: 'Marcar asistencia', headerShown: false }} />
-          <Stack.Screen name="MyHistory" component={MyHistoryScreen} options={{ title: 'Mi historial' }} />
-        </>
-      )}
+      <Stack.Screen name="Kiosk" component={KioskScreen} options={{ headerShown: false }} />
     </Stack.Navigator>
   );
 }

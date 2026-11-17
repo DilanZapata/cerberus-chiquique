@@ -6,10 +6,18 @@ import { PrismaService } from '../../database/prisma.service';
 import { addDays, startOfLocalDay } from '../../common/utils/time.util';
 import { NoveltiesService } from '../novelties/novelties.service';
 import { MailerService } from './mailer.service';
+import { timeLogPhotoPath } from '../../common/utils/photo-storage.util';
 
 function localKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
+
+const MARK_LABELS: Record<string, string> = {
+  CHECK_IN: 'entrada',
+  LUNCH_OUT: 'salida a almuerzo',
+  LUNCH_IN: 'reingreso de almuerzo',
+  CHECK_OUT: 'salida',
+};
 
 function hhmm(date: Date): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -93,9 +101,61 @@ export class AttendanceAlertService {
     }
   }
 
-  private async send(companyId: string, subject: string, html: string, payloadSummary: Record<string, unknown>) {
+  /**
+   * Aviso a la empresa cuando alguien marca con su cedula/codigo/PIN pero el
+   * rostro de la foto NO es el que tiene enrolado (posible marcacion por
+   * otra persona). La marca ya quedo registrada; el correo lleva la foto
+   * adjunta para revisarla. Nunca lanza.
+   */
+  async notifyFaceMismatch(
+    userId: string,
+    mark: { loggedAt: Date; logType: string; workSiteName: string; photoUrl: string | null; distance: number | null },
+  ): Promise<void> {
     try {
-      const recipients = await this.mailerService.sendMail(companyId, { subject, html });
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { companyId: true, fullName: true, employeeCode: true, nationalId: true, department: { select: { name: true } } },
+      });
+      if (!user || !(await this.alertsEnabled(user.companyId))) return;
+
+      const markLabel = MARK_LABELS[mark.logType] ?? mark.logType;
+      const photoPath = mark.photoUrl ? timeLogPhotoPath(mark.photoUrl) : null;
+      const [year, month, day] = localKey(mark.loggedAt).split('-');
+      const subject = `Cerberus: el rostro no coincide en la marca de ${user.fullName}`;
+      const html = `
+        <h2>El rostro no coincide con el enrolado</h2>
+        <p>Se registro una <strong>${markLabel}</strong> a nombre de <strong>${user.fullName}</strong>
+        (${user.employeeCode}, CC ${user.nationalId}${user.department ? `, ${user.department.name}` : ''})
+        el ${day}/${month}/${year} a las <strong>${hhmm(mark.loggedAt)}</strong> en ${mark.workSiteName}.</p>
+        <p>La persona digito ese codigo o cedula, pero <strong>el rostro de la foto no coincide con el rostro enrolado</strong>
+        de ese empleado. Puede ser que otra persona haya marcado por el, o una foto con mala luz o de lado.</p>
+        <p>La marca <strong>si quedo registrada</strong>. ${photoPath ? 'La foto va adjunta a este correo; tambien' : 'La foto'}
+        se puede ver en el panel web, en Historial de Marcas. Si no fue esa persona, corrige o borra la marca en
+        Corregir Marcas y Novedades.</p>
+        <p style="color:#64748b;font-size:12px">Si la foto si es de la persona, conviene volver a enrolar su rostro con buena luz
+        (app Cerberus Managers, Empleados).</p>
+      `;
+      await this.send(
+        user.companyId,
+        subject,
+        html,
+        { type: 'FACE_MISMATCH', userId, loggedAt: mark.loggedAt.toISOString(), logType: mark.logType, distance: mark.distance },
+        photoPath ? [{ filename: 'foto-de-la-marca.jpg', path: photoPath }] : undefined,
+      );
+    } catch (error) {
+      this.logger.error(`No se pudo enviar la alerta de rostro que no coincide (usuario ${userId}): ${(error as Error).message}`);
+    }
+  }
+
+  private async send(
+    companyId: string,
+    subject: string,
+    html: string,
+    payloadSummary: Record<string, unknown>,
+    attachments?: Array<{ filename: string; path: string }>,
+  ) {
+    try {
+      const recipients = await this.mailerService.sendMail(companyId, { subject, html, attachments });
       await this.prisma.notificationLog.create({
         data: { companyId, subject, recipients, payloadSummary: payloadSummary as object, status: 'SENT' },
       });

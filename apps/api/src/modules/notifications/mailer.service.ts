@@ -6,7 +6,10 @@ import { EmailSettingsService } from '../email-settings/email-settings.service';
 export class MailerService {
   constructor(private readonly emailSettingsService: EmailSettingsService) {}
 
-  async sendMail(companyId: string, opts: { subject: string; html: string; to?: string[] }): Promise<string[]> {
+  async sendMail(
+    companyId: string,
+    opts: { subject: string; html: string; to?: string[]; attachments?: Array<{ filename: string; path: string }> },
+  ): Promise<string[]> {
     const settings = await this.emailSettingsService.getDecryptedForSending(companyId);
     const transporter = nodemailer.createTransport({
       host: settings.smtpHost,
@@ -21,6 +24,7 @@ export class MailerService {
       to: recipients.join(', '),
       subject: opts.subject,
       html: opts.html,
+      attachments: opts.attachments,
     });
     return recipients;
   }

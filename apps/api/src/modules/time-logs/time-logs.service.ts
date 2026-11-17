@@ -304,6 +304,8 @@ export class TimeLogsService {
       longitude: log.longitude ? log.longitude.toNumber() : null,
       gpsValid: log.gpsValid,
       photoUrl: log.photoUrl,
+      faceCheck: log.faceCheck,
+      faceDistance: log.faceDistance?.toNumber() ?? null,
       workSite: log.workSite?.name ?? null,
     }));
   }

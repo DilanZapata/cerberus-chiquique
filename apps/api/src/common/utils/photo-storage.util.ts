@@ -65,3 +65,9 @@ export function deleteTimeLogPhoto(photoUrl: string): void {
     // Ignorado a proposito, ver comentario arriba.
   }
 }
+
+/** Ruta en disco de una foto guardada por `saveTimeLogPhoto` (para adjuntarla a un correo); null si ya no existe. */
+export function timeLogPhotoPath(photoUrl: string): string | null {
+  const fullPath = join(UPLOADS_ROOT, photoUrl.replace(/^\/uploads\//, ''));
+  return existsSync(fullPath) ? fullPath : null;
+}

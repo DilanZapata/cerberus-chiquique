@@ -37,6 +37,15 @@ type ResultTone = 'success' | 'warning' | 'error';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Kiosk'>;
 
+const MAX_IDENTIFIER_LENGTH = 20;
+// Teclado en pantalla del kiosco: botones grandes y siempre visibles, sin
+// que el teclado del telefono tape la camara ni mueva la pantalla.
+const KEYPAD_ROWS = [
+  ['1', '2', '3'],
+  ['4', '5', '6'],
+  ['7', '8', '9'],
+  ['ABC', '0', 'DEL'],
+];
 const PIN_RESULT_VISIBLE_MS = 7000; // cuanto queda en pantalla el resultado del registro por cedula/codigo/PIN
 const LOCATION_TIMEOUT_MS = 12000; // tope de espera por una posicion GPS nueva
 const LOCATION_CACHE_MS = 2 * 60_000; // el kiosco es una terminal fija: la ultima posicion sirve un rato
@@ -113,7 +122,7 @@ const STATUS_LABEL: Record<KioskState, string> = {
  * estabilidad) sigue disponible como modo alternativo, y el login personal
  * como boton discreto en la esquina.
  */
-export default function KioskScreen({ navigation }: Props) {
+export default function KioskScreen({}: Props) {
   const isFocused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -124,7 +133,10 @@ export default function KioskScreen({ navigation }: Props) {
   // valor fijo pensado solo para tablet.
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
   const isCompact = screenHeight < 700;
-  const pinCameraSize = Math.round(Math.min(screenHeight * (isCompact ? 0.16 : 0.22), screenWidth * 0.4, 150));
+  const pinCameraSize = Math.round(Math.min(screenHeight * (isCompact ? 0.14 : 0.18), screenWidth * 0.36, 140));
+  // Alto de cada tecla del teclado en pantalla: lo que sobra de la pantalla
+  // (titulo, camara, campo, resultado y boton ya descontados) entre 4 filas.
+  const keypadKeyHeight = Math.max(40, Math.min(64, Math.floor((screenHeight - 350 - pinCameraSize) / 4) - 8));
 
   const [kioskState, setKioskState] = useState<KioskState>('INITIALIZING');
   const [statusDetail, setStatusDetail] = useState<string | null>(null);
@@ -332,9 +344,9 @@ export default function KioskScreen({ navigation }: Props) {
   const [pinMessage, setPinMessage] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinLoading, setPinLoading] = useState(false);
-  // Numerico por defecto (cedula y PIN); "ABC" lo cambia para codigos con letras.
+  // Por defecto se digita con los numeros de la propia pantalla (cedula y
+  // PIN). "ABC" abre el teclado del telefono, solo para codigos con letras.
   const [lettersKeyboard, setLettersKeyboard] = useState(false);
-  const identifierInputRef = useRef<TextInput>(null);
   const pinSubmittingRef = useRef(false);
   const pinResultTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -357,10 +369,15 @@ export default function KioskScreen({ navigation }: Props) {
   }, []);
 
   function toggleKeyboard() {
+    Keyboard.dismiss();
     setLettersKeyboard((current) => !current);
-    // Android solo cambia de teclado al volver a enfocar el campo.
-    identifierInputRef.current?.blur();
-    setTimeout(() => identifierInputRef.current?.focus(), 150);
+  }
+
+  function pressKey(key: string) {
+    if (pinLoading) return;
+    if (key === 'ABC') return toggleKeyboard();
+    if (key === 'DEL') return setIdentifier((current) => current.slice(0, -1));
+    setIdentifier((current) => (current.length >= MAX_IDENTIFIER_LENGTH ? current : current + key));
   }
 
   async function submitPin() {
@@ -374,19 +391,18 @@ export default function KioskScreen({ navigation }: Props) {
     setPinError(null);
     setPinMessage(null);
     try {
-      const coords = await getCurrentCoords();
-      // La foto es solo evidencia para revisar despues: si la camara falla,
-      // la marca se registra igual, sin foto.
-      let imageBase64: string | undefined;
-      if (permission?.granted && cameraRef.current) {
-        try {
-          const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
-          if (photo?.base64) imageBase64 = `data:image/jpeg;base64,${photo.base64}`;
-        } catch {
-          imageBase64 = undefined;
-        }
+      // Para registrar debe verse el rostro: el servidor lo busca en la foto y
+      // lo compara con el rostro enrolado de quien digito su cedula/codigo.
+      if (!permission?.granted || !cameraRef.current) {
+        throw new Error('Se necesita la camara para registrar. Toca "Permitir" en el recuadro de la camara.');
       }
-      const result = await kioskClock({ ...coords, identifier: value, imageBase64 });
+      // La ubicacion (ya lista en segundo plano) y la foto se piden a la vez.
+      const [coords, photo] = await Promise.all([
+        getCurrentCoords(),
+        cameraRef.current.takePictureAsync({ base64: true, quality: 0.4 }).catch(() => null),
+      ]);
+      if (!photo?.base64) throw new Error('No se pudo tomar la foto. Mira a la camara e intenta de nuevo.');
+      const result = await kioskClock({ ...coords, identifier: value, imageBase64: `data:image/jpeg;base64,${photo.base64}` });
       setPinMessage(
         `${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`,
       );
@@ -408,10 +424,6 @@ export default function KioskScreen({ navigation }: Props) {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
-      <TouchableOpacity style={styles.loginCorner} onPress={() => navigation.navigate('Login')}>
-        <Text style={styles.loginCornerText}>Iniciar sesion</Text>
-      </TouchableOpacity>
-
       {!showPinMode && (
         <TouchableOpacity style={styles.backCorner} onPress={() => setShowPinMode(true)}>
           <Text style={styles.backCornerText}>‹ Codigo y PIN</Text>
@@ -426,7 +438,7 @@ export default function KioskScreen({ navigation }: Props) {
         >
           <View style={styles.pinHeader}>
             <Text style={styles.titleCompact}>Cerberus</Text>
-            <Text style={styles.subtitleCompact}>Digita tu cedula, tu codigo o tu PIN para marcar tu asistencia</Text>
+            <Text style={styles.subtitleCompact}>Mira a la camara y digita tu cedula, tu codigo o tu PIN</Text>
           </View>
 
           {permission?.granted ? (
@@ -443,48 +455,76 @@ export default function KioskScreen({ navigation }: Props) {
           )}
 
           <View style={styles.pinFormColumn}>
-            <View>
-              <View style={styles.fieldLabelRow}>
-                <Text style={styles.fieldLabel}>Cedula, codigo de empleado o PIN</Text>
-                <TouchableOpacity
-                  style={styles.keyboardToggle}
-                  onPress={toggleKeyboard}
-                  hitSlop={8}
-                  accessibilityLabel={lettersKeyboard ? 'Usar teclado numerico' : 'Usar teclado de letras'}
-                >
-                  <Text style={styles.keyboardToggleText}>{lettersKeyboard ? '123' : 'ABC'}</Text>
+            <View style={styles.fieldLabelRow}>
+              <Text style={styles.fieldLabel}>Cedula, codigo de empleado o PIN</Text>
+              {lettersKeyboard && (
+                <TouchableOpacity style={styles.keyboardToggle} onPress={toggleKeyboard} hitSlop={8} accessibilityLabel="Volver a los numeros">
+                  <Text style={styles.keyboardToggleText}>123</Text>
                 </TouchableOpacity>
-              </View>
+              )}
+            </View>
+
+            {lettersKeyboard ? (
+              // Solo para codigos con letras ("ADM001"): teclado del telefono.
               <TextInput
-                ref={identifierInputRef}
                 style={styles.inputCompact}
-                placeholder="Digita cualquiera de los 3"
+                placeholder="Escribe tu codigo"
                 placeholderTextColor="#94a3b8"
                 value={identifier}
                 onChangeText={setIdentifier}
                 autoCapitalize="characters"
                 autoCorrect={false}
-                // Numerico por defecto (cedula y PIN son numericos, el caso
-                // mas comun). El teclado numerico de Android no tiene letras:
-                // para un codigo como "ADM001" se cambia con el boton "ABC".
-                keyboardType={lettersKeyboard ? 'default' : 'numeric'}
+                autoFocus
+                maxLength={MAX_IDENTIFIER_LENGTH}
                 returnKeyType="done"
                 onSubmitEditing={submitPin}
               />
-            </View>
+            ) : (
+              <>
+                <View style={styles.display} accessible accessibilityLabel={identifier ? `Digitado: ${identifier}` : 'Nada digitado aun'}>
+                  <Text style={identifier ? styles.displayValue : styles.displayPlaceholder} numberOfLines={1} adjustsFontSizeToFit>
+                    {identifier || 'Digita con los numeros de abajo'}
+                  </Text>
+                </View>
+                <View style={styles.keypad}>
+                  {KEYPAD_ROWS.map((row) => (
+                    <View key={row.join('')} style={styles.keypadRow}>
+                      {row.map((key) => {
+                        const isAction = key === 'ABC' || key === 'DEL';
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            style={[styles.key, { height: keypadKeyHeight }, isAction && styles.keyAction]}
+                            activeOpacity={0.6}
+                            onPress={() => pressKey(key)}
+                            onLongPress={key === 'DEL' ? () => setIdentifier('') : undefined}
+                            accessibilityLabel={key === 'DEL' ? 'Borrar' : key === 'ABC' ? 'Usar teclado de letras' : key}
+                          >
+                            <Text style={isAction ? styles.keyActionText : styles.keyText}>{key === 'DEL' ? 'Borrar' : key}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
           </View>
 
           <View style={styles.pinFooter}>
-            {pinError && (
-              <Text style={styles.error} numberOfLines={2}>
-                {pinError}
-              </Text>
-            )}
-            {pinMessage && (
-              <Text style={styles.success} numberOfLines={2}>
-                {pinMessage}
-              </Text>
-            )}
+            {/* Espacio reservado: el resultado aparece sin mover el teclado ni el boton. */}
+            <View style={styles.pinResultSlot}>
+              {pinError && (
+                <Text style={styles.error} numberOfLines={2}>
+                  {pinError}
+                </Text>
+              )}
+              {pinMessage && (
+                <Text style={[styles.success, styles.pinSuccessStrong]} numberOfLines={2}>
+                  {pinMessage}
+                </Text>
+              )}
+            </View>
 
             <TouchableOpacity
               style={styles.submitCompact}
@@ -553,24 +593,6 @@ export default function KioskScreen({ navigation }: Props) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#fff' },
-  loginCorner: {
-    position: 'absolute',
-    top: 12,
-    right: 16,
-    zIndex: 10,
-    // El preview de CameraView en Android es un SurfaceView nativo: compone
-    // en una capa aparte que ignora el zIndex de RN, asi que un boton
-    // superpuesto puede quedar visualmente encima pero sin recibir toques
-    // (la camara "se los come"). `elevation` fuerza a Android a promover
-    // esta vista a su propia capa de hardware, que si respeta el orden
-    // frente al SurfaceView.
-    elevation: 10,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-  },
-  loginCornerText: { color: '#334155', fontWeight: '600', fontSize: 12 },
   backCorner: {
     position: 'absolute',
     top: 12,
@@ -613,10 +635,30 @@ const styles = StyleSheet.create({
   pinHeader: { alignItems: 'center', gap: 2 },
   titleCompact: { fontSize: 18, fontWeight: '700' },
   subtitleCompact: { fontSize: 11, color: '#475569', textAlign: 'center', paddingHorizontal: 8 },
-  // Campos de texto REALES (no un teclado numerico propio): asi el usuario
-  // usa el teclado nativo del telefono, que ya conoce, en vez de un control
-  // a medida que puede no quedar claro que se puede tocar.
-  pinFormColumn: { width: '100%', gap: 8 },
+  // Campo + teclado numerico en pantalla. El campo se ve como un campo de
+  // verdad (borde, texto de ayuda, lo digitado en grande) para que quede
+  // claro para que es y se vea lo que se va escribiendo.
+  pinFormColumn: { width: '100%', maxWidth: 380, gap: 6 },
+  display: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#94a3b8',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#fff',
+    minHeight: 46,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  displayValue: { fontSize: 24, fontWeight: '700', color: '#0f172a', letterSpacing: 2 },
+  displayPlaceholder: { fontSize: 14, color: '#94a3b8' },
+  keypad: { width: '100%', gap: 8, marginTop: 2 },
+  keypadRow: { flexDirection: 'row', gap: 8 },
+  key: { flex: 1, borderRadius: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: '#cbd5e1', alignItems: 'center', justifyContent: 'center' },
+  keyText: { fontSize: 24, fontWeight: '700', color: '#0f172a' },
+  keyAction: { backgroundColor: '#e2e8f0', borderColor: '#e2e8f0' },
+  keyActionText: { fontSize: 14, fontWeight: '700', color: '#334155' },
   fieldLabel: { fontSize: 11, color: '#64748b', marginBottom: 2, fontWeight: '600' },
   fieldLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
   keyboardToggle: { borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 6, paddingVertical: 2, paddingHorizontal: 8, backgroundColor: 'white' },
@@ -637,5 +679,7 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
   pinFooter: { alignItems: 'center', gap: 4, width: '100%' },
+  pinResultSlot: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 8 },
+  pinSuccessStrong: { fontWeight: '700', fontSize: 15 },
   submitCompact: { backgroundColor: '#0f172a', paddingVertical: 10, paddingHorizontal: 28, borderRadius: 8 },
 });

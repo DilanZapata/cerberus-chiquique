@@ -450,6 +450,10 @@ model TimeLog {
   gpsValid    Boolean?      @map("gps_valid")
   deviceId    String?       @map("device_id")
   photoUrl    String?       @map("photo_url")
+  // Resultado de comparar la foto con el rostro enrolado de la persona:
+  // MATCH | MISMATCH | NOT_ENROLLED (null = marca sin verificacion).
+  faceCheck    String?  @map("face_check") @db.VarChar(20)
+  faceDistance Decimal? @map("face_distance") @db.Decimal(5, 3)
   createdById String?       @map("created_by")
   createdAt   DateTime      @default(now()) @map("created_at")
 
