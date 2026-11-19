@@ -24,6 +24,7 @@ import {
   NoveltyOrigin as PrismaNoveltyOrigin,
   NoveltyStatus as PrismaNoveltyStatus,
   ScheduleType,
+  TimeLogSource,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays, combineDateAndTime, startOfLocalDay, timeToHHmm } from '../../common/utils/time.util';
@@ -357,14 +358,18 @@ export class NoveltiesService {
    * de novedades nunca cuenten horas distintas.
    */
   async getWorkedSegmentsForDay(userId: string, date: Date, allowsLunchSkip: boolean) {
-    const [marks, lunchPolicy] = await Promise.all([
+    const [marks, lunchPolicy, shiftResolution] = await Promise.all([
       this.getDayMarks(userId, date),
       this.getLunchPolicy(userId, date, allowsLunchSkip),
+      this.getPlannedShift(userId, date),
     ]);
     // Sin salida final no hay intervalo cerrado que contar: una jornada
     // abierta se muestra con sus marcas pero sin horas (resolveLunch usaria
     // "ahora" como referencia, lo que no aplica a un reporte historico).
-    const segments = marks.checkIn && marks.checkOut ? resolveLunch(marks, lunchPolicy).workedSegments : [];
+    const segments =
+      marks.checkIn && marks.checkOut
+        ? resolveLunch(marks, lunchPolicy, undefined, shiftResolution.plannedShift).workedSegments
+        : [];
     return { marks, segments };
   }
 
@@ -762,7 +767,10 @@ export class NoveltiesService {
    * calendario de la entrada.
    */
   private async getDayMarks(userId: string, date: Date) {
-    return findShiftMarks(this.prisma, userId, date);
+    const marks = await findShiftMarks(this.prisma, userId, date);
+    // El motor de almuerzo distingue una salida marcada por la persona de la
+    // que puso el cierre automatico (ver resolveLunch).
+    return { ...marks, checkOutIsAutomatic: marks.checkOutSource === TimeLogSource.AUTO_CLOSE };
   }
 
   private async persist(

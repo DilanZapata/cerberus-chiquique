@@ -10,6 +10,8 @@ export interface DayMarks {
   lunchOut?: Date; // Marca 2
   lunchIn?: Date; // Marca 3
   checkOut?: Date; // Marca 4
+  /** true si la salida la puso el cierre automatico (la persona no la marco). */
+  checkOutIsAutomatic?: boolean;
 }
 
 export interface LunchResolution {
@@ -26,14 +28,25 @@ export interface LunchResolution {
  *    es dinamica: el tiempo se mide siempre relativo a la Marca 2, sin
  *    importar si el almuerzo se tomo a las 12, 13 o 14 horas.
  *  - Si hay Marca 2 pero no Marca 3 dentro del limite razonable, se genera
- *    ABANDONO_ALMUERZO ("Inasistencia/Abandono tras Almuerzo").
+ *    ABANDONO_ALMUERZO ("Inasistencia/Abandono tras Almuerzo"). Excepcion: si
+ *    la persona SI marco su salida del dia (Marca 4 real, no la del cierre
+ *    automatico), es que volvio y solo olvido marcar el regreso: se asume el
+ *    almuerzo estandar y la jornada queda senalada para revision.
  *  - Si no hay Marca 2 (trabajo corrido): si el empleado tiene habilitada la
  *    omision de almuerzo, no se descuenta tiempo (el efecto de "adelantar" la
  *    salida ocurre naturalmente porque no hay hueco de almuerzo que restar).
  *    Si no la tiene habilitada, se descuenta automaticamente el tiempo
- *    predeterminado de almuerzo del final de la jornada.
+ *    predeterminado de almuerzo, pero solo si la persona estaba trabajando a
+ *    su hora de almuerzo (entro antes y salio despues). Quien llego despues
+ *    del almuerzo o se fue antes no pierde esa hora.
  */
-export function resolveLunch(marks: DayMarks, policy: LunchPolicy, now: Date = new Date()): LunchResolution {
+export function resolveLunch(
+  marks: DayMarks,
+  policy: LunchPolicy,
+  now: Date = new Date(),
+  /** Turno programado del dia, si lo hay: define cual es "su hora de almuerzo". */
+  plannedShift?: { start: Date; end: Date },
+): LunchResolution {
   const novelties: CalculatedNovelty[] = [];
 
   if (!marks.checkIn) {
@@ -67,6 +80,30 @@ export function resolveLunch(marks: DayMarks, policy: LunchPolicy, now: Date = n
 
   // Caso 2: salio a almuerzo pero nunca marco reingreso (Marca 3 ausente).
   if (marks.lunchOut && !marks.lunchIn) {
+    // Olvido marcar el regreso, pero marco la salida del dia ella misma (en el
+    // sitio, horas despues): la persona volvio a trabajar. Se asume que tomo
+    // el almuerzo estandar, en vez de dejarle sin pagar toda la tarde como si
+    // no hubiera vuelto. La salida del cierre automatico NO cuenta como
+    // evidencia de regreso (nadie la marco).
+    const assumedReturn = new Date(marks.lunchOut.getTime() + policy.defaultLunchMinutes * MINUTE_MS);
+    if (marks.checkOut && !marks.checkOutIsAutomatic && marks.checkOut > assumedReturn) {
+      novelties.push({
+        code: NoveltyCode.JORNADA_REQUIERE_REVISION,
+        hours: 0,
+        status: NoveltyStatus.AUTO_CALCULADA,
+        origin: NoveltyOrigin.SISTEMA,
+        notes: `No marco el regreso de almuerzo, pero si marco su salida a las ${marks.checkOut.toTimeString().slice(0, 5)}: se asumio el almuerzo estandar de ${policy.defaultLunchMinutes} min. Verificar.`,
+      });
+      return {
+        workedSegments: [
+          { start: marks.checkIn, end: marks.lunchOut },
+          { start: assumedReturn, end: marks.checkOut },
+        ],
+        novelties,
+        lunchMinutesDeducted: policy.defaultLunchMinutes,
+      };
+    }
+
     const referenceEnd = marks.checkOut ?? now;
     const elapsedSinceLunchOut = (referenceEnd.getTime() - marks.lunchOut.getTime()) / MINUTE_MS;
     const allowedMinutes = policy.defaultLunchMinutes + policy.toleranceMinutes;
@@ -98,37 +135,70 @@ export function resolveLunch(marks: DayMarks, policy: LunchPolicy, now: Date = n
   // predeterminado dentro de la ventana de almuerzo configurada (ej. 12:00-14:00),
   // no del final de la jornada. Restarlo al final distorsionaria la clasificacion
   // diurna/nocturna en turnos que cruzan el inicio de la jornada nocturna.
+  //
+  // El descuento SOLO aplica si la persona estaba trabajando a su hora de
+  // almuerzo: entro antes de que empezara y seguia ahi cuando termino. A quien
+  // llego despues del almuerzo (o en plena hora de almuerzo) o se fue antes,
+  // no se le resta nada: no pudo haber almorzado en tiempo de trabajo.
   if (marks.checkOut) {
     const checkIn = marks.checkIn;
     const checkOut = marks.checkOut;
     const totalMinutes = (checkOut.getTime() - checkIn.getTime()) / MINUTE_MS;
     const lunchMinutes = Math.min(policy.defaultLunchMinutes, Math.max(0, totalMinutes));
+    const fullDay = { workedSegments: [{ start: checkIn, end: checkOut }], novelties, lunchMinutesDeducted: 0 };
+    if (lunchMinutes <= 0) return fullDay;
 
+    const DAY_MS = 24 * 60 * MINUTE_MS;
     const [windowStartHour, windowStartMinute] = policy.windowStart.split(':').map(Number);
-    const windowInstanceOn = (referenceDate: Date) => {
-      const instance = new Date(referenceDate);
-      instance.setHours(windowStartHour, windowStartMinute, 0, 0);
-      return instance;
+    const [windowEndHour, windowEndMinute] = policy.windowEnd.split(':').map(Number);
+    const windowInstance = (referenceDate: Date, dayOffset: number) => {
+      const start = new Date(referenceDate);
+      start.setHours(windowStartHour, windowStartMinute, 0, 0);
+      start.setTime(start.getTime() + dayOffset * DAY_MS);
+      const end = new Date(start);
+      end.setHours(windowEndHour, windowEndMinute, 0, 0);
+      if (end <= start) end.setTime(end.getTime() + DAY_MS); // ventana que cruza medianoche
+      return { start, end };
     };
-    const fitsInShift = (candidate: Date) =>
-      candidate >= checkIn && candidate.getTime() + lunchMinutes * MINUTE_MS <= checkOut.getTime();
 
-    // La ventana puede caer el mismo dia de la entrada (turno diurno normal)
-    // o al dia siguiente (turno nocturno cuya salida cruza la ventana del
-    // dia calendario posterior, ej. entra a las 6pm y sale a las 8am).
-    const candidateSameDay = windowInstanceOn(checkIn);
-    const candidateNextDay = new Date(candidateSameDay.getTime() + 24 * 60 * MINUTE_MS);
+    // La hora de almuerzo que le corresponde a esta jornada: la ventana que
+    // cae sobre el turno programado (o, sin turno programado, sobre lo que
+    // trabajo). Puede ser la del dia siguiente en un turno nocturno.
+    const reference = plannedShift ?? { start: checkIn, end: checkOut };
+    const lunchWindow = [-1, 0, 1]
+      .map((dayOffset) => windowInstance(reference.start, dayOffset))
+      .find((window) => window.start < reference.end && window.end > reference.start);
 
     let lunchStart: Date;
-    if (fitsInShift(candidateSameDay)) {
-      lunchStart = candidateSameDay;
-    } else if (fitsInShift(candidateNextDay)) {
-      lunchStart = candidateNextDay;
-    } else {
+    if (lunchWindow) {
+      // Turno demasiado corto para que el almuerzo quepa antes de la salida
+      // programada (ej. sabado medio dia 6:00-12:00 con almuerzo a las 11:30):
+      // ese dia no hay almuerzo que descontar.
+      const lunchFitsInShift =
+        !plannedShift || plannedShift.end.getTime() > lunchWindow.start.getTime() + policy.defaultLunchMinutes * MINUTE_MS;
+      // "Seguia ahi cuando termino el almuerzo": hasta el fin de la ventana, o
+      // hasta su salida programada si es antes, con la tolerancia del horario.
+      const mustStayUntil =
+        Math.min(lunchWindow.end.getTime(), plannedShift ? plannedShift.end.getTime() : Infinity) - policy.toleranceMinutes * MINUTE_MS;
+      const workedThroughLunch =
+        checkIn.getTime() <= lunchWindow.start.getTime() &&
+        checkOut.getTime() >= mustStayUntil &&
+        checkOut.getTime() >= lunchWindow.start.getTime() + lunchMinutes * MINUTE_MS;
+      if (!lunchFitsInShift || !workedThroughLunch) return fullDay;
+      lunchStart = lunchWindow.start;
+    } else if (plannedShift) {
       // La ventana configurada no cae dentro de este turno (ej. turno
       // nocturno sin ventana de almuerzo propia definida): se descuenta
-      // cerca del final de la jornada como respaldo razonable.
+      // cerca del final de la jornada como respaldo razonable -- pero solo si
+      // la persona estuvo trabajando a mitad del turno, que es cuando se
+      // asume la comida; a quien solo hizo una punta del turno no se le resta.
+      const shiftMiddle = (plannedShift.start.getTime() + plannedShift.end.getTime()) / 2;
+      const halfLunch = (lunchMinutes * MINUTE_MS) / 2;
+      if (checkIn.getTime() > shiftMiddle - halfLunch || checkOut.getTime() < shiftMiddle + halfLunch) return fullDay;
       lunchStart = new Date(checkOut.getTime() - lunchMinutes * MINUTE_MS);
+    } else {
+      // Sin turno programado y sin haber trabajado a la hora de almuerzo.
+      return fullDay;
     }
     const lunchEnd = new Date(lunchStart.getTime() + lunchMinutes * MINUTE_MS);
 

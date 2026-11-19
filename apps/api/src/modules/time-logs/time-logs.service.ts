@@ -3,7 +3,15 @@ import { Prisma, TimeLogSource, TimeLogType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays, startOfLocalDay } from '../../common/utils/time.util';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
-import { describeClosedShift, findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
+import {
+  describeClosedShift,
+  duplicateMarkMessage,
+  findShiftMarks,
+  isDuplicateMarkError,
+  isRepeatedMark,
+  persistResolvedMark,
+  resolveNextMark,
+} from '../../common/utils/shift-marks.util';
 import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
 import { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
@@ -144,6 +152,11 @@ export class TimeLogsService {
       const todayMarks = await findShiftMarks(this.prisma, userId, startOfLocalDay(now));
       throw new BadRequestException(describeClosedShift(todayMarks));
     }
+    // Marca repetida (la misma persona marcando otra vez lo que ya marco): no
+    // se guarda nada y se le dice que ya quedo registrada.
+    if (isRepeatedMark(resolved)) {
+      throw new BadRequestException(resolved.message);
+    }
 
     // Chequeo rapido (sin lock) ANTES de tocar la foto: cubre el caso comun
     // de un doble-toque accidental sin gastar el guardado/redimension de la
@@ -163,24 +176,21 @@ export class TimeLogsService {
           throw new BadRequestException({ message: duplicateGuardMessage(finalCheck), secondsRemaining: finalCheck.secondsRemaining });
         }
 
-        await tx.timeLog.create({
-          data: {
-            userId,
-            workSiteId: workSite.id,
-            logType: resolved.nextLogType,
-            loggedAt: now,
-            source: TimeLogSource.MOBILE_GPS,
-            latitude: dto.latitude,
-            longitude: dto.longitude,
-            gpsValid,
-            photoUrl,
-          },
+        await persistResolvedMark(tx, user, resolved, {
+          workSiteId: workSite.id,
+          loggedAt: now,
+          source: TimeLogSource.MOBILE_GPS,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+          gpsValid,
+          photoUrl,
         });
       });
     } catch (err) {
       // La marca no quedo creada (bloqueada por el guard, o cualquier otro
       // error): no dejar la foto huerfana en disco.
       if (photoUrl) deleteTimeLogPhoto(photoUrl);
+      if (isDuplicateMarkError(err)) throw new BadRequestException(duplicateMarkMessage(resolved.nextLogType));
       throw err;
     }
 

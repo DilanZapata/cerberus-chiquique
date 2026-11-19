@@ -3,7 +3,15 @@ import * as bcrypt from 'bcrypt';
 import { TimeLogSource, TimeLogType, User, WorkSite } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
-import { describeClosedShift, findShiftMarks, resolveNextMark } from '../../common/utils/shift-marks.util';
+import {
+  describeClosedShift,
+  duplicateMarkMessage,
+  findShiftMarks,
+  isDuplicateMarkError,
+  isRepeatedMark,
+  persistResolvedMark,
+  resolveNextMark,
+} from '../../common/utils/shift-marks.util';
 import { startOfLocalDay } from '../../common/utils/time.util';
 import { saveTimeLogPhoto, deleteTimeLogPhoto } from '../../common/utils/photo-storage.util';
 import { checkRecentSelfServiceMark, duplicateGuardMessage, withUserRegistrationLock } from '../../common/utils/duplicate-registration-guard.util';
@@ -210,6 +218,11 @@ export class KioskService {
       const todayMarks = await findShiftMarks(this.prisma, user.id, startOfLocalDay(now));
       throw new BadRequestException(`${user.fullName}: ${describeClosedShift(todayMarks)}`);
     }
+    // Marca repetida (la misma persona marcando otra vez lo que ya marco): no
+    // se guarda nada y se le dice que ya quedo registrada.
+    if (isRepeatedMark(resolved)) {
+      throw new BadRequestException(`${user.fullName}: ${resolved.message}`);
+    }
 
     // Chequeo rapido (sin lock) ANTES de tocar la foto: cubre el caso comun
     // de un doble-toque accidental en el kiosco sin gastar el
@@ -266,24 +279,25 @@ export class KioskService {
           });
         }
 
-        await tx.timeLog.create({
-          data: {
-            userId: user.id,
-            workSiteId,
-            logType: resolved.nextLogType,
-            loggedAt: now,
-            source: TimeLogSource.KIOSK,
-            latitude,
-            longitude,
-            gpsValid: true, // ya se valido que cae dentro del radio de la sede al identificarla (findNearbyWorkSites)
-            photoUrl,
-            faceCheck: face.status,
-            faceDistance: face.distance,
-          },
+        // Guarda la marca y, si la decision lo pide, corrige la salida
+        // anterior (ej. una salida anticipada que no fue la definitiva).
+        await persistResolvedMark(tx, user, resolved, {
+          workSiteId,
+          loggedAt: now,
+          source: TimeLogSource.KIOSK,
+          latitude,
+          longitude,
+          gpsValid: true, // ya se valido que cae dentro del radio de la sede al identificarla (findNearbyWorkSites)
+          photoUrl,
+          faceCheck: face.status,
+          faceDistance: face.distance,
         });
       });
     } catch (err) {
       if (photoUrl) deleteTimeLogPhoto(photoUrl);
+      if (isDuplicateMarkError(err)) {
+        throw new BadRequestException(`${user.fullName}: ${duplicateMarkMessage(resolved.nextLogType)}`);
+      }
       throw err;
     }
 

@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   StyleSheet,
   Text,
@@ -368,6 +369,10 @@ export default function KioskScreen({}: Props) {
     };
   }, []);
 
+  function dismissPinError() {
+    setPinError(null);
+  }
+
   function toggleKeyboard() {
     Keyboard.dismiss();
     setLettersKeyboard((current) => !current);
@@ -514,11 +519,6 @@ export default function KioskScreen({}: Props) {
           <View style={styles.pinFooter}>
             {/* Espacio reservado: el resultado aparece sin mover el teclado ni el boton. */}
             <View style={styles.pinResultSlot}>
-              {pinError && (
-                <Text style={styles.error} numberOfLines={2}>
-                  {pinError}
-                </Text>
-              )}
               {pinMessage && (
                 <Text style={[styles.success, styles.pinSuccessStrong]} numberOfLines={2}>
                   {pinMessage}
@@ -587,6 +587,23 @@ export default function KioskScreen({}: Props) {
           )}
         </View>
       )}
+      {/* Los errores del registro salen como una alerta grande al centro de la
+          pantalla: imposible no verla. Se cierra con el boton o sola a los
+          pocos segundos, para que no le quede abierta a la siguiente persona. */}
+      <Modal visible={pinError !== null} transparent animationType="fade" statusBarTranslucent onRequestClose={dismissPinError}>
+        <View style={styles.alertBackdrop}>
+          <View style={styles.alertCard} accessibilityRole="alert">
+            <View style={styles.alertIcon}>
+              <Text style={styles.alertIconText}>!</Text>
+            </View>
+            <Text style={styles.alertTitle}>No se pudo registrar</Text>
+            <Text style={styles.alertMessage}>{pinError}</Text>
+            <TouchableOpacity style={styles.alertButton} onPress={dismissPinError}>
+              <Text style={styles.alertButtonText}>Entendido</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -679,6 +696,14 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
   pinFooter: { alignItems: 'center', gap: 4, width: '100%' },
+  alertBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.6)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  alertCard: { width: '100%', maxWidth: 380, backgroundColor: 'white', borderRadius: 16, padding: 24, alignItems: 'center', gap: 10 },
+  alertIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fee2e2', alignItems: 'center', justifyContent: 'center' },
+  alertIconText: { fontSize: 30, fontWeight: '800', color: '#b91c1c' },
+  alertTitle: { fontSize: 19, fontWeight: '800', color: '#0f172a', textAlign: 'center' },
+  alertMessage: { fontSize: 16, color: '#334155', textAlign: 'center', lineHeight: 22 },
+  alertButton: { marginTop: 8, backgroundColor: '#0f172a', paddingVertical: 14, borderRadius: 10, alignSelf: 'stretch', alignItems: 'center' },
+  alertButtonText: { color: 'white', fontWeight: '700', fontSize: 16 },
   pinResultSlot: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 8 },
   pinSuccessStrong: { fontWeight: '700', fontSize: 15 },
   submitCompact: { backgroundColor: '#0f172a', paddingVertical: 10, paddingHorizontal: 28, borderRadius: 8 },

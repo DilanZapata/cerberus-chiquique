@@ -18,6 +18,8 @@ export const NOVELTY_LABELS: Record<string, string> = {
   INCAPACIDAD_ARL: 'Incapacidad ARL',
   VACACIONES: 'Vacaciones',
   HORA_EXTRA_PENDIENTE: 'Hora extra pendiente de autorizacion',
+  SALIDA_NO_REGISTRADA: 'No marco salida (cierre automatico)',
+  JORNADA_REQUIERE_REVISION: 'Jornada requiere revision',
 };
 
 export const NOVELTY_BADGE_CLASS: Record<string, string> = {

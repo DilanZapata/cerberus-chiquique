@@ -70,8 +70,9 @@ export interface CalculateDailyNoveltiesInput {
  *     programado.
  *  3. Clasificacion de cada intervalo trabajado en los 7 conceptos legales
  *     (RNO, DDCOF, DNCOF, HEOD, HEON, HEFD, HEFN). Con horario programado,
- *     lo ordinario corre hasta la hora de salida programada (sin importar
- *     si la entrada fue tarde) y lo que sigue despues es hora extra; sin
+ *     lo ordinario corre de la hora de entrada a la de salida programadas
+ *     (sin importar si la entrada fue tarde) y lo trabajado antes o despues
+ *     es hora extra; sin
  *     horario, se usa el tope legal diario de siempre. En ambos casos se
  *     respeta ademas el remanente semanal vigente.
  *  4. Si hay horas extra y la empresa exige autorizacion previa, quedan en
@@ -99,7 +100,7 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
 
   const novelties: CalculatedNovelty[] = [];
 
-  const lunchResolution = resolveLunch(marks, lunchPolicy);
+  const lunchResolution = resolveLunch(marks, lunchPolicy, undefined, input.plannedShift);
   novelties.push(...lunchResolution.novelties);
 
   if (plannedShift && marks.checkIn) {
@@ -146,11 +147,41 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
   let remainingCapForDay = plannedShift ? remainingWeeklyMinutes : Math.min(dailyCapMinutes, remainingWeeklyMinutes);
 
   const buckets = emptyBuckets();
+  // Lo trabajado ANTES de la hora de entrada programada va aparte: es hora
+  // extra (ver mas abajo) y se redondea por separado de la del final del turno.
+  const bucketsBeforeShift = emptyBuckets();
   let ordinaryMinutesConsumedToday = 0;
   let totalWorkedMinutes = 0;
   const overtimeOrder: NoveltyCode[] = [];
+  const noteOvertimeOrder = (keys: Array<keyof HourBuckets>) => {
+    for (const key of keys) {
+      const code = key as unknown as NoveltyCode;
+      if (!overtimeOrder.includes(code)) overtimeOrder.push(code);
+    }
+  };
 
-  for (const segment of lunchResolution.workedSegments) {
+  for (const workedSegment of lunchResolution.workedSegments) {
+    let segment = workedSegment;
+
+    // Con horario programado, la jornada ordinaria va de la hora de entrada a
+    // la de salida del horario. Todo lo trabajado fuera de ella es hora
+    // extra: tanto lo de despues de la salida como lo de ANTES de la entrada
+    // (quien marca a las 6:40 con turno de 8:00 hizo 1h20 de extra, que queda
+    // pendiente de autorizar como cualquier otra; antes se pagaba como tiempo
+    // ordinario, sin que nadie lo aprobara).
+    if (plannedShift && segment.start < plannedShift.start) {
+      const beforeShiftEnd = new Date(Math.min(segment.end.getTime(), plannedShift.start.getTime()));
+      const beforeShift = classifySegments(
+        splitIntoHomogeneousSegments(segment.start, beforeShiftEnd, payrollConfig.dayStartTime, payrollConfig.nightStartTime),
+        0, // sin cupo ordinario: todo es extra
+      );
+      noteOvertimeOrder(beforeShift.overtimeOrder);
+      mergeBuckets(bucketsBeforeShift, beforeShift.buckets);
+      totalWorkedMinutes += (beforeShiftEnd.getTime() - segment.start.getTime()) / MINUTE_MS;
+      if (beforeShiftEnd >= segment.end) continue;
+      segment = { start: beforeShiftEnd, end: segment.end };
+    }
+
     let segmentOrdinaryCap = remainingCapForDay;
     if (plannedShift) {
       const minutesUntilScheduledEnd = Math.max(0, (plannedShift.end.getTime() - segment.start.getTime()) / MINUTE_MS);
@@ -167,10 +198,7 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
       homogeneousSegments,
       segmentOrdinaryCap,
     );
-    for (const key of segmentOvertimeOrder) {
-      const code = key as unknown as NoveltyCode;
-      if (!overtimeOrder.includes(code)) overtimeOrder.push(code);
-    }
+    noteOvertimeOrder(segmentOvertimeOrder);
     remainingCapForDay -= ordinaryMinutesConsumed;
     ordinaryMinutesConsumedToday += ordinaryMinutesConsumed;
     mergeBuckets(buckets, segmentBuckets);
@@ -180,8 +208,12 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
   // Las horas extra (no las ordinarias/recargos) se redondean en bloques de
   // media hora con tolerancia de 15 min: los primeros 15 min de mas no
   // cuentan, de ahi en adelante suben de a 0.5h (ver roundMinutesToHalfHourBlocks).
+  // La extra de antes del turno y la de despues se redondean cada una por su
+  // lado: llegar 10 min antes y salir 10 min despues no suma media hora extra.
   for (const key of OVERTIME_BUCKET_KEYS) {
-    buckets[key] = roundMinutesToHalfHourBlocks(buckets[key] * 60, arrivalTolerance);
+    buckets[key] =
+      roundMinutesToHalfHourBlocks(buckets[key] * 60, arrivalTolerance) +
+      roundMinutesToHalfHourBlocks(bucketsBeforeShift[key] * 60, arrivalTolerance);
   }
 
   for (const code of PAYROLL_REPORT_NOVELTY_CODES) {
