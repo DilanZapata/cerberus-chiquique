@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { Prisma } from '@prisma/client';
 import {
   planShiftRotation,
   planMilkingRotation,
@@ -22,6 +23,24 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const GENERATION_HORIZON_WEEKS = 4;
+/** Semanas de turnos que se generan al habilitar una rutina de ordeño. */
+const MILKING_ROUTINE_HORIZON_WEEKS = 8;
+
+interface MilkingRoutineWorker {
+  userId: string;
+  role: 'ORDENADOR' | 'RELEVO' | 'VAQUERO' | 'COMODIN';
+  homeStation?: number;
+  shortDayOffset?: number;
+}
+
+/** Lo que se guarda de una rutina de ordeño (columna `config`). */
+interface MilkingRoutineConfig {
+  workers: MilkingRoutineWorker[];
+  morningStart: string;
+  morningEnd: string;
+  eveningStart: string;
+  eveningEnd: string;
+}
 
 /** Texto del puesto de un dia de la rutina de ordeño por roles (se guarda en la plantilla y en el turno). */
 function milkingPostLabel(cell: MilkingRosterCell): string | null {
@@ -30,18 +49,6 @@ function milkingPostLabel(cell: MilkingRosterCell): string | null {
   if (cell.kind === 'CORTO') return `Ordeñador (Ordeño ${number}) · media jornada`;
   const base = cell.post === 'VAQUERIA' ? `Vaquero (Vaquería ${number})` : `Ordeñador (Ordeño ${number})`;
   return cell.isCover ? `${base} · cubre` : base;
-}
-
-/** Lee de vuelta el puesto guardado por `milkingPostLabel` (para mostrar una rutina ya creada). */
-function parseMilkingPostLabel(notes: string | null): { post: 'ORDENO' | 'VAQUERIA'; station: number; isCover: boolean; isShortDay: boolean } | null {
-  const match = notes?.match(/^(Ordeñador|Vaquero) \((?:Ordeño|Vaquería) (\d+)\)(.*)$/);
-  if (!match) return null;
-  return {
-    post: match[1] === 'Vaquero' ? 'VAQUERIA' : 'ORDENO',
-    station: Number(match[2]) - 1,
-    isCover: match[3].includes('cubre'),
-    isShortDay: match[3].includes('media jornada'),
-  };
 }
 
 function toDateKey(date: Date): string {
@@ -337,13 +344,63 @@ export class ShiftPatternsService {
     };
   }
 
+  // =====================================================================
+  // Rutinas de ordeño por roles (guardar -> ver -> habilitar)
+  // =====================================================================
+
+  /** Planilla de 14 dias de una rutina, a partir de su configuracion. `anchorKey` (YYYY-MM-DD) solo aporta las fechas. */
+  private milkingRosterView(
+    stationsCount: number,
+    workers: MilkingRoutineWorker[],
+    nameById: Map<string, string>,
+    anchorKey: string | null,
+  ) {
+    const plan = planMilkingRoster({
+      stationsCount,
+      workers: workers.map((w) => ({ id: w.userId, role: w.role, homeStation: w.homeStation, shortDayOffset: w.shortDayOffset })),
+    });
+    const anchorLocal = anchorKey ? new Date(`${anchorKey}T00:00:00`) : null;
+    const dateAt = (dayOffset: number) => (anchorLocal ? toDateKey(addDays(anchorLocal, dayOffset)) : null);
+    const offsetByWorker = new Map(plan.workerOffsets.map((w) => [w.workerId, w]));
+
+    return {
+      plan,
+      view: {
+        feasible: plan.feasible,
+        cycleLengthDays: plan.cycleLengthDays,
+        stationsCount: plan.stationsCount,
+        anchorDate: anchorKey ?? '',
+        workers: workers.map((w) => ({
+          userId: w.userId,
+          fullName: nameById.get(w.userId) ?? 'Persona que ya no existe',
+          role: w.role,
+          homeStation: w.role === 'COMODIN' ? null : w.homeStation ?? 0,
+          shortDayOffset: offsetByWorker.get(w.userId)?.offset ?? 0,
+          chosenBySystem: offsetByWorker.get(w.userId)?.chosenBySystem ?? false,
+        })),
+        days: plan.days.map((day) => ({
+          dayOffset: day.dayOffset,
+          date: dateAt(day.dayOffset),
+          cells: day.cells.map((cell) => ({
+            userId: cell.workerId,
+            kind: cell.kind,
+            post: cell.post ?? null,
+            station: cell.station ?? null,
+            isCover: cell.isCover,
+          })),
+        })),
+        gaps: plan.gaps.map((gap) => ({ ...gap, date: dateAt(gap.dayOffset) })),
+        vaqueriaCoversByOrdenadores: plan.vaqueriaCoversByOrdenadores,
+        warnings: plan.warnings,
+      },
+    };
+  }
+
   /**
-   * Rutina de ordeño POR ROLES: cada persona tiene su puesto base (ordeñador
-   * fijo o de relevo de un ordeño, vaquero de una vaqueria, o comodin) y el
-   * mismo ciclo de descanso de 14 dias. El sistema reparte los puestos de
-   * cada dia y dice que dias quedan sin cubrir. Con `preview` solo calcula;
-   * sin `preview` crea las plantillas, asigna a cada persona y genera los
-   * turnos -- y solo si ningun puesto queda sin cubrir.
+   * Arma una rutina de ordeño por roles. Con `preview` solo calcula como
+   * quedaria; sin `preview` la GUARDA (no cambia el horario de nadie: para
+   * eso hay que habilitarla despues con `enableMilkingRoutine`). Solo se
+   * puede guardar si ningun puesto queda sin cubrir.
    */
   async milkingRoster(companyId: string, dto: MilkingRosterDto) {
     const userIds = dto.workers.map((w) => w.userId);
@@ -360,238 +417,220 @@ export class ShiftPatternsService {
       }
     }
     const nameById = new Map(users.map((u) => [u.id, u.fullName]));
-
-    const plan = planMilkingRoster({
-      stationsCount: dto.stationsCount,
-      workers: dto.workers.map((w) => ({ id: w.userId, role: w.role, homeStation: w.homeStation, shortDayOffset: w.shortDayOffset })),
-    });
-
-    const anchorDate = new Date(`${dto.anchorDate}T00:00:00`);
-    const offsetByWorker = new Map(plan.workerOffsets.map((w) => [w.workerId, w]));
-    const result = {
-      feasible: plan.feasible,
-      created: false,
-      cycleLengthDays: plan.cycleLengthDays,
-      stationsCount: plan.stationsCount,
-      anchorDate: dto.anchorDate,
-      workers: dto.workers.map((w) => ({
-        userId: w.userId,
-        fullName: nameById.get(w.userId) ?? w.userId,
-        role: w.role,
-        homeStation: w.role === 'COMODIN' ? null : w.homeStation ?? 0,
-        shortDayOffset: offsetByWorker.get(w.userId)?.offset ?? 0,
-        chosenBySystem: offsetByWorker.get(w.userId)?.chosenBySystem ?? false,
-      })),
-      days: plan.days.map((day) => ({
-        dayOffset: day.dayOffset,
-        date: toDateKey(addDays(anchorDate, day.dayOffset)),
-        cells: day.cells.map((cell) => ({
-          userId: cell.workerId,
-          kind: cell.kind,
-          post: cell.post ?? null,
-          station: cell.station ?? null,
-          isCover: cell.isCover,
-        })),
-      })),
-      gaps: plan.gaps.map((gap) => ({ ...gap, date: toDateKey(addDays(anchorDate, gap.dayOffset)) })),
-      vaqueriaCoversByOrdenadores: plan.vaqueriaCoversByOrdenadores,
-      warnings: plan.warnings,
-      scheduleId: null as string | null,
-      shiftsGenerated: 0,
-    };
+    const { plan, view } = this.milkingRosterView(dto.stationsCount, dto.workers, nameById, dto.anchorDate ?? null);
+    const result = { ...view, saved: false, routineId: null as string | null };
 
     if (dto.preview || !plan.feasible) return result;
 
-    const morningStart = dto.morningStart ?? '04:00';
-    const morningEnd = dto.morningEnd ?? '08:00';
-    const eveningStart = dto.eveningStart ?? '16:00';
-    const eveningEnd = dto.eveningEnd ?? '20:00';
-    const lunchMinutes = Math.max(0, Math.round((hhmmToTime(eveningStart).getTime() - hhmmToTime(morningEnd).getTime()) / 60_000));
-    const horizon = addDays(anchorDate, (dto.horizonWeeks ?? 8) * 7);
-    const dayBeforeAnchor = addDays(anchorDate, -1);
-
-    // Mismo horario compartido que la rutina de ordeño clasica: resuelve el
-    // hueco de medio dia entre el ordeño de la manana y el de la tarde.
-    const schedule = await this.prisma.schedule.create({
-      data: {
-        companyId,
-        name: `${dto.name} - Horario`,
-        defaultLunchMinutes: lunchMinutes,
-        lunchWindowStart: hhmmToTime(morningEnd),
-        lunchWindowEnd: hhmmToTime(eveningStart),
-        lunchToleranceMinutes: 30,
-      },
+    // Se guarda con el dia de media jornada YA resuelto para cada persona,
+    // asi la planilla guardada no cambia si despues cambia el planificador.
+    const offsetByWorker = new Map(plan.workerOffsets.map((w) => [w.workerId, w.offset]));
+    const config: MilkingRoutineConfig = {
+      workers: dto.workers.map((w) => ({
+        userId: w.userId,
+        role: w.role,
+        homeStation: w.role === 'COMODIN' ? undefined : w.homeStation ?? 0,
+        shortDayOffset: offsetByWorker.get(w.userId) ?? 0,
+      })),
+      morningStart: dto.morningStart ?? '04:00',
+      morningEnd: dto.morningEnd ?? '08:00',
+      eveningStart: dto.eveningStart ?? '16:00',
+      eveningEnd: dto.eveningEnd ?? '20:00',
+    };
+    const routine = await this.prisma.milkingRoutine.create({
+      data: { companyId, name: dto.name.trim(), stationsCount: dto.stationsCount, config: config as unknown as Prisma.InputJsonValue },
     });
-    result.scheduleId = schedule.id;
+    return { ...result, saved: true, routineId: routine.id };
+  }
 
-    for (const worker of dto.workers) {
-      const cells = plan.days.map((day) => day.cells.find((cell) => cell.workerId === worker.userId)!);
+  /** Todas las rutinas de ordeño guardadas de la empresa, con su planilla: primero la vigente. */
+  async listMilkingRoutines(companyId: string) {
+    const routines = await this.prisma.milkingRoutine.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' } });
+    const allUserIds = [...new Set(routines.flatMap((r) => (r.config as unknown as MilkingRoutineConfig).workers.map((w) => w.userId)))];
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: allUserIds }, companyId },
+      select: { id: true, fullName: true, isActive: true },
+    });
+    const nameById = new Map(users.map((u) => [u.id, u.fullName]));
+    const activeIds = new Set(users.filter((u) => u.isActive).map((u) => u.id));
+    const statusOrder: Record<string, number> = { VIGENTE: 0, GUARDADA: 1, INACTIVA: 2 };
 
-      const pattern = await this.prisma.shiftPattern.create({
-        data: {
-          companyId,
-          name: `${dto.name} - ${nameById.get(worker.userId) ?? worker.userId}`,
-          cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS,
-          days: {
-            create: cells.map((cell, dayOffset) => {
-              if (cell.kind === 'DESCANSO') {
-                return { dayOffset, isRestDay: true, rotationType: 'DESCANSO' as const, startTime: null, endTime: null, lunchMinutes: 0, notes: null };
-              }
-              if (cell.kind === 'CORTO') {
-                return {
-                  dayOffset,
-                  isRestDay: false,
-                  rotationType: 'DIURNO' as const,
-                  startTime: hhmmToTime(morningStart),
-                  endTime: hhmmToTime(morningEnd),
-                  lunchMinutes: 0,
-                  notes: milkingPostLabel(cell),
-                };
-              }
-              return {
-                dayOffset,
-                isRestDay: false,
-                rotationType: 'MIXTO' as const,
-                startTime: hhmmToTime(morningStart),
-                endTime: hhmmToTime(eveningEnd),
-                lunchMinutes,
-                notes: milkingPostLabel(cell),
-              };
-            }),
-          },
-        },
-      });
-
-      // La rutina nueva reemplaza, desde su fecha de inicio, la rutina y el
-      // horario que la persona tuviera: se les pone fecha de fin (no se borran).
-      const stillActive = { userId: worker.userId, OR: [{ validTo: null }, { validTo: { gte: anchorDate } }] };
-      await this.prisma.userShiftPatternAssignment.updateMany({ where: stillActive, data: { validTo: dayBeforeAnchor } });
-      await this.prisma.userSchedule.updateMany({ where: stillActive, data: { validTo: dayBeforeAnchor } });
-
-      await this.prisma.userShiftPatternAssignment.create({
-        data: { userId: worker.userId, patternId: pattern.id, anchorDate, validFrom: anchorDate },
-      });
-      await this.prisma.userSchedule.create({
-        data: { userId: worker.userId, scheduleId: schedule.id, validFrom: anchorDate },
-      });
-
-      result.shiftsGenerated += await this.generateShiftsForUser(worker.userId, anchorDate, horizon);
-    }
-
-    result.created = true;
-    return result;
+    return routines
+      .map((routine) => {
+        const config = routine.config as unknown as MilkingRoutineConfig;
+        const anchorKey = routine.anchorDate ? routine.anchorDate.toISOString().slice(0, 10) : null;
+        const { view } = this.milkingRosterView(routine.stationsCount, config.workers, nameById, anchorKey);
+        return {
+          id: routine.id,
+          name: routine.name,
+          status: routine.status as 'GUARDADA' | 'VIGENTE' | 'INACTIVA',
+          createdAt: routine.createdAt.toISOString(),
+          validTo: routine.validTo ? routine.validTo.toISOString().slice(0, 10) : null,
+          morningStart: config.morningStart,
+          morningEnd: config.morningEnd,
+          eveningStart: config.eveningStart,
+          eveningEnd: config.eveningEnd,
+          // Personas de la rutina que ya no estan activas en la empresa: impiden habilitarla.
+          unavailableWorkers: config.workers.filter((w) => !activeIds.has(w.userId)).map((w) => nameById.get(w.userId) ?? 'Persona que ya no existe'),
+          ...view,
+        };
+      })
+      .sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9));
   }
 
   /**
-   * Rutinas de ordeño por roles que estan vigentes en `dateIso` (hoy si no
-   * viene), reconstruidas desde las plantillas ya creadas, en el mismo
-   * formato que devuelve `milkingRoster`: para volver a ver la planilla de
-   * las semanas A y B en cualquier momento, no solo al crearla.
+   * Habilita una rutina guardada desde `startDate` (un lunes: es el primer
+   * dia de su semana A). Desde ese dia la rutina pasa a ser el horario de
+   * sus trabajadores:
+   *  - Las otras rutinas de ordeño vigentes que compartan alguna persona con
+   *    esta dejan de regir el dia anterior (quedan INACTIVA) y se borran sus
+   *    turnos futuros.
+   *  - A cada persona de esta rutina se le pone fecha de fin a la rutina y
+   *    al horario que tuviera, y se le generan los turnos nuevos.
    */
-  async currentMilkingRosters(companyId: string, dateIso?: string) {
-    const date = dateIso ? new Date(`${dateIso.slice(0, 10)}T00:00:00`) : new Date(new Date().setHours(0, 0, 0, 0));
-    const assignments = await this.prisma.userShiftPatternAssignment.findMany({
-      where: {
-        user: { companyId, isActive: true },
-        validFrom: { lte: date },
-        OR: [{ validTo: null }, { validTo: { gte: date } }],
-        pattern: { cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS, days: { some: { notes: { not: null } } } },
-      },
-      orderBy: { validFrom: 'desc' },
-      include: { user: { select: { id: true, fullName: true } }, pattern: { include: { days: true } } },
-    });
+  async enableMilkingRoutine(companyId: string, routineId: string, startDateIso: string) {
+    const routine = await this.prisma.milkingRoutine.findFirst({ where: { id: routineId, companyId } });
+    if (!routine) throw new NotFoundException('Rutina de ordeño no encontrada.');
+    if (routine.status === 'VIGENTE') throw new BadRequestException('Esta rutina ya está vigente.');
 
-    // Una asignacion por persona (la mas reciente), agrupadas por rutina.
-    const seenUsers = new Set<string>();
-    const groups = new Map<string, { name: string; anchorDate: Date; members: typeof assignments }>();
-    for (const assignment of assignments) {
-      if (seenUsers.has(assignment.userId)) continue;
-      seenUsers.add(assignment.userId);
-      const suffix = ` - ${assignment.user.fullName}`;
-      const name = assignment.pattern.name.endsWith(suffix) ? assignment.pattern.name.slice(0, -suffix.length) : assignment.pattern.name;
-      const key = `${name}|${toDateKey(assignment.anchorDate)}`;
-      if (!groups.has(key)) groups.set(key, { name, anchorDate: assignment.anchorDate, members: [] });
-      groups.get(key)!.members.push(assignment);
+    const startKey = startDateIso.slice(0, 10);
+    const startDate = new Date(`${startKey}T00:00:00`);
+    if (Number.isNaN(startDate.getTime())) throw new BadRequestException('La fecha de inicio no es válida.');
+    if (startDate.getDay() !== 1) {
+      throw new BadRequestException('La rutina debe empezar un lunes: es el primer día de su semana A.');
+    }
+    const today = new Date();
+    const thisMonday = addDays(new Date(today.getFullYear(), today.getMonth(), today.getDate()), -((today.getDay() + 6) % 7));
+    if (startDate < thisMonday) {
+      throw new BadRequestException('No se puede habilitar hacia atrás: la fecha más antigua permitida es el lunes de esta semana.');
     }
 
-    return [...groups.values()].map((group) => {
-      // `anchorDate` es columna DATE (medianoche UTC): se lee con getters UTC.
-      const anchorKey = group.anchorDate.toISOString().slice(0, 10);
-      const anchorLocal = new Date(`${anchorKey}T00:00:00`);
+    const config = routine.config as unknown as MilkingRoutineConfig;
+    const workerIds = config.workers.map((w) => w.userId);
+    const users = await this.prisma.user.findMany({ where: { id: { in: workerIds }, companyId, isActive: true }, select: { id: true, fullName: true } });
+    if (users.length !== workerIds.length) {
+      throw new BadRequestException('Alguna persona de esta rutina ya no está activa en la empresa. Arma una rutina nueva con el equipo actual.');
+    }
+    const nameById = new Map(users.map((u) => [u.id, u.fullName]));
+    const { plan } = this.milkingRosterView(routine.stationsCount, config.workers, nameById, startKey);
+    if (!plan.feasible) throw new BadRequestException('Esta rutina deja puestos sin cubrir; no se puede habilitar.');
 
-      const rows = group.members.map((member) => {
-        const cells = Array.from({ length: MILKING_CYCLE_LENGTH_DAYS }, (_, dayOffset) => {
-          const day = member.pattern.days.find((d) => d.dayOffset === dayOffset);
-          const parsed = parseMilkingPostLabel(day?.notes ?? null);
-          if (!day || day.isRestDay || !parsed) {
-            return { userId: member.userId, kind: 'DESCANSO' as const, post: null, station: null, isCover: false };
-          }
-          return {
-            userId: member.userId,
-            kind: parsed.isShortDay ? ('CORTO' as const) : ('COMPLETO' as const),
-            post: parsed.post,
-            station: parsed.station,
-            isCover: parsed.isCover,
-          };
+    const lunchMinutes = Math.max(0, Math.round((hhmmToTime(config.eveningStart).getTime() - hhmmToTime(config.morningEnd).getTime()) / 60_000));
+    const dayBefore = addDays(startDate, -1);
+    const horizon = addDays(startDate, MILKING_ROUTINE_HORIZON_WEEKS * 7);
+    const stillActiveFrom = { OR: [{ validTo: null }, { validTo: { gte: startDate } }] };
+
+    const replaced: Array<{ name: string; leftWithoutRoutine: string[] }> = [];
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1) Rutinas vigentes que comparten gente con esta: dejan de regir.
+      const others = await tx.milkingRoutine.findMany({ where: { companyId, status: 'VIGENTE', id: { not: routine.id } } });
+      for (const other of others) {
+        const otherWorkerIds = (other.config as unknown as MilkingRoutineConfig).workers.map((w) => w.userId);
+        if (!otherWorkerIds.some((id) => workerIds.includes(id))) continue;
+
+        await tx.userShiftPatternAssignment.updateMany({
+          where: { pattern: { milkingRoutineId: other.id }, ...stillActiveFrom },
+          data: { validTo: dayBefore },
         });
+        if (other.scheduleId) {
+          await tx.userSchedule.updateMany({ where: { scheduleId: other.scheduleId, ...stillActiveFrom }, data: { validTo: dayBefore } });
+        }
+        await tx.shift.deleteMany({ where: { userId: { in: otherWorkerIds }, workDate: { gte: startDate } } });
+        await tx.milkingRoutine.update({ where: { id: other.id }, data: { status: 'INACTIVA', validTo: dayBefore } });
 
-        // El puesto base no se guarda: se deduce de donde trabaja la persona.
-        const fullDays = cells.filter((c) => c.kind === 'COMPLETO');
-        const countByPost = new Map<string, number>();
-        for (const cell of fullDays) countByPost.set(`${cell.post}:${cell.station}`, (countByPost.get(`${cell.post}:${cell.station}`) ?? 0) + 1);
-        const hasCover = fullDays.some((c) => c.isCover);
-        const [mainPost] = [...countByPost.entries()].sort((a, b) => b[1] - a[1])[0] ?? ['ORDENO:0'];
-        const [mainKind, mainStation] = mainPost.split(':');
-        const isComodin = countByPost.size > 1 && !hasCover;
-        const role = isComodin ? 'COMODIN' : mainKind === 'VAQUERIA' ? 'VAQUERO' : hasCover ? 'RELEVO' : 'ORDENADOR';
-        const shortDayOffset = cells.findIndex((c) => c.kind === 'CORTO');
+        const leftIds = otherWorkerIds.filter((id) => !workerIds.includes(id));
+        const leftUsers = leftIds.length ? await tx.user.findMany({ where: { id: { in: leftIds } }, select: { fullName: true } }) : [];
+        replaced.push({ name: other.name, leftWithoutRoutine: leftUsers.map((u) => u.fullName) });
+      }
 
-        return {
-          worker: {
-            userId: member.userId,
-            fullName: member.user.fullName,
-            role: role as 'ORDENADOR' | 'RELEVO' | 'VAQUERO' | 'COMODIN',
-            homeStation: isComodin ? null : Number(mainStation),
-            shortDayOffset: Math.max(0, shortDayOffset),
-            chosenBySystem: false,
-          },
-          cells,
-        };
+      // 2) Horario compartido de la rutina: resuelve el hueco de medio dia
+      //    entre el ordeño de la manana y el de la tarde.
+      const schedule = await tx.schedule.create({
+        data: {
+          companyId,
+          name: `${routine.name} - Horario`,
+          defaultLunchMinutes: lunchMinutes,
+          lunchWindowStart: hhmmToTime(config.morningEnd),
+          lunchWindowEnd: hhmmToTime(config.eveningStart),
+          lunchToleranceMinutes: 30,
+        },
       });
 
-      const stationsCount = Math.max(1, ...rows.flatMap((row) => row.cells.map((cell) => (cell.station ?? 0) + 1)));
-      const days = Array.from({ length: MILKING_CYCLE_LENGTH_DAYS }, (_, dayOffset) => ({
-        dayOffset,
-        date: toDateKey(addDays(anchorLocal, dayOffset)),
-        cells: rows.map((row) => row.cells[dayOffset]),
-      }));
-      const gaps = days.flatMap((day) =>
-        Array.from({ length: stationsCount }, (_, station) => {
-          const ordenadores = day.cells.filter((c) => c.kind === 'COMPLETO' && c.post === 'ORDENO' && c.station === station).length;
-          const vaqueros = day.cells.filter((c) => c.kind === 'COMPLETO' && c.post === 'VAQUERIA' && c.station === station).length;
-          return [
-            ...(ordenadores < 2 ? [{ dayOffset: day.dayOffset, date: day.date, station, post: 'ORDENO' as const, missing: 2 - ordenadores }] : []),
-            ...(vaqueros < 1 ? [{ dayOffset: day.dayOffset, date: day.date, station, post: 'VAQUERIA' as const, missing: 1 }] : []),
-          ];
-        }).flat(),
-      );
+      // 3) Cada persona: se cierra lo que tuviera y se le asigna esta rutina.
+      for (const worker of config.workers) {
+        const cells = plan.days.map((day) => day.cells.find((cell) => cell.workerId === worker.userId)!);
+        const pattern = await tx.shiftPattern.create({
+          data: {
+            companyId,
+            milkingRoutineId: routine.id,
+            name: `${routine.name} - ${nameById.get(worker.userId) ?? worker.userId}`,
+            cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS,
+            days: {
+              create: cells.map((cell, dayOffset) => {
+                if (cell.kind === 'DESCANSO') {
+                  return { dayOffset, isRestDay: true, rotationType: 'DESCANSO' as const, startTime: null, endTime: null, lunchMinutes: 0, notes: null };
+                }
+                if (cell.kind === 'CORTO') {
+                  return {
+                    dayOffset,
+                    isRestDay: false,
+                    rotationType: 'DIURNO' as const,
+                    startTime: hhmmToTime(config.morningStart),
+                    endTime: hhmmToTime(config.morningEnd),
+                    lunchMinutes: 0,
+                    notes: milkingPostLabel(cell),
+                  };
+                }
+                return {
+                  dayOffset,
+                  isRestDay: false,
+                  rotationType: 'MIXTO' as const,
+                  startTime: hhmmToTime(config.morningStart),
+                  endTime: hhmmToTime(config.eveningEnd),
+                  lunchMinutes,
+                  notes: milkingPostLabel(cell),
+                };
+              }),
+            },
+          },
+        });
 
-      return {
-        name: group.name,
-        feasible: gaps.length === 0,
-        created: true,
-        cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS,
-        stationsCount,
-        anchorDate: anchorKey,
-        workers: rows.map((row) => row.worker),
-        days,
-        gaps,
-        vaqueriaCoversByOrdenadores: 0,
-        warnings: [] as string[],
-        scheduleId: null as string | null,
-        shiftsGenerated: 0,
-      };
-    });
+        const mine = { userId: worker.userId, ...stillActiveFrom };
+        await tx.userShiftPatternAssignment.updateMany({ where: mine, data: { validTo: dayBefore } });
+        await tx.userSchedule.updateMany({ where: mine, data: { validTo: dayBefore } });
+        await tx.shift.deleteMany({ where: { userId: worker.userId, workDate: { gte: startDate } } });
+
+        await tx.userShiftPatternAssignment.create({
+          data: { userId: worker.userId, patternId: pattern.id, anchorDate: startDate, validFrom: startDate },
+        });
+        await tx.userSchedule.create({ data: { userId: worker.userId, scheduleId: schedule.id, validFrom: startDate } });
+      }
+
+      await tx.milkingRoutine.update({
+        where: { id: routine.id },
+        data: { status: 'VIGENTE', anchorDate: startDate, validTo: null, scheduleId: schedule.id, activatedAt: new Date() },
+      });
+    }, { timeout: 60_000 });
+
+    // 4) Turnos concretos de las proximas semanas (el cron semanal los sigue extendiendo).
+    let shiftsGenerated = 0;
+    for (const workerId of workerIds) {
+      shiftsGenerated += await this.generateShiftsForUser(workerId, startDate, horizon);
+    }
+
+    return { routineId: routine.id, startDate: startKey, shiftsGenerated, replaced };
+  }
+
+  /** Borra una rutina que solo esta guardada (nunca ha regido). */
+  async deleteMilkingRoutine(companyId: string, routineId: string) {
+    const routine = await this.prisma.milkingRoutine.findFirst({ where: { id: routineId, companyId } });
+    if (!routine) throw new NotFoundException('Rutina de ordeño no encontrada.');
+    if (routine.status !== 'GUARDADA') {
+      throw new BadRequestException('Solo se puede borrar una rutina que nunca ha estado vigente.');
+    }
+    await this.prisma.milkingRoutine.delete({ where: { id: routine.id } });
+    return { deleted: true };
   }
 
   /** Asigna una plantilla a cada integrante activo de un departamento, con un ancla opcionalmente desfasada por persona. */

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { ShiftPatternsService } from './shift-patterns.service';
 import { CreateShiftPatternDto } from './dto/create-shift-pattern.dto';
@@ -6,7 +6,7 @@ import { AssignPatternToTeamDto, AssignPatternToUserDto } from './dto/assign-pat
 import { GenerateShiftsDto } from './dto/generate-shifts.dto';
 import { SmartGenerateShiftPatternDto } from './dto/smart-generate.dto';
 import { SmartGenerateMilkingDto } from './dto/smart-generate-milking.dto';
-import { MilkingRosterDto } from './dto/milking-roster.dto';
+import { EnableMilkingRoutineDto, MilkingRosterDto } from './dto/milking-roster.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 
 @Roles(UserRole.ADMIN, UserRole.HR)
@@ -44,16 +44,28 @@ export class ShiftPatternsController {
     return this.shiftPatternsService.smartGenerateMilking(companyId, dto);
   }
 
-  /** Rutinas de ordeño por roles vigentes (hoy, o en `date`), para ver la planilla de semanas A y B. */
-  @Get('milking-roster/current')
-  currentMilkingRosters(@Query('companyId') companyId: string, @Query('date') date?: string) {
-    return this.shiftPatternsService.currentMilkingRosters(companyId, date);
+  /** Rutinas de ordeño guardadas de la empresa, cada una con su planilla de semanas A y B. */
+  @Get('milking-routines')
+  listMilkingRoutines(@Query('companyId') companyId: string) {
+    return this.shiftPatternsService.listMilkingRoutines(companyId);
   }
 
-  /** Rutina de ordeño por roles. Con `preview: true` solo calcula como quedaria, sin crear nada. */
+  /** Arma una rutina de ordeño por roles. `preview: true` solo calcula; sin `preview` la guarda. */
   @Post('milking-roster')
   milkingRoster(@Query('companyId') companyId: string, @Body() dto: MilkingRosterDto) {
     return this.shiftPatternsService.milkingRoster(companyId, dto);
+  }
+
+  /** Habilita una rutina guardada: desde `startDate` es el horario de sus trabajadores. */
+  @Post('milking-routines/:id/enable')
+  enableMilkingRoutine(@Query('companyId') companyId: string, @Param('id') id: string, @Body() dto: EnableMilkingRoutineDto) {
+    return this.shiftPatternsService.enableMilkingRoutine(companyId, id, dto.startDate);
+  }
+
+  /** Borra una rutina que solo esta guardada. */
+  @Delete('milking-routines/:id')
+  deleteMilkingRoutine(@Query('companyId') companyId: string, @Param('id') id: string) {
+    return this.shiftPatternsService.deleteMilkingRoutine(companyId, id);
   }
 
   @Post('generate')

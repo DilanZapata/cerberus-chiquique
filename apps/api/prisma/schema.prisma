@@ -170,6 +170,7 @@ model Company {
   users                User[]
   schedules            Schedule[]
   shiftPatterns        ShiftPattern[]
+  milkingRoutines      MilkingRoutine[]
   payrollSettings      PayrollSettings?
   payrollConfigVersions PayrollConfigVersion[]
   emailSettings        EmailSettings?
@@ -670,11 +671,43 @@ model ShiftPattern {
   cycleLengthDays Int      @map("cycle_length_days")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  company     Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  days        ShiftPatternDay[]
-  assignments UserShiftPatternAssignment[]
+  // Rutina de ordeño guardada a la que pertenece esta plantilla (null = otro tipo de rutina).
+  milkingRoutineId String? @map("milking_routine_id")
 
+  company        Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  milkingRoutine MilkingRoutine?              @relation(fields: [milkingRoutineId], references: [id], onDelete: SetNull)
+  days           ShiftPatternDay[]
+  assignments    UserShiftPatternAssignment[]
+
+  @@index([milkingRoutineId])
   @@map("shift_patterns")
+}
+
+// Rutina de ordeño por roles GUARDADA. Se arma, se guarda y despues se
+// habilita desde una fecha; solo al habilitarla pasa a ser el horario de sus
+// trabajadores (se crean sus plantillas, asignaciones y turnos).
+//   status: GUARDADA (nunca ha regido) | VIGENTE | INACTIVA (fue reemplazada)
+//   config: { workers: [{ userId, role, homeStation, shortDayOffset }],
+//             morningStart, morningEnd, eveningStart, eveningEnd }
+model MilkingRoutine {
+  id            String    @id @default(uuid())
+  companyId     String    @map("company_id")
+  name          String
+  stationsCount Int       @map("stations_count")
+  config        Json
+  status        String    @default("GUARDADA")
+  // Lunes de la semana A desde el que rige (o rigio) la rutina.
+  anchorDate    DateTime? @map("anchor_date") @db.Date
+  validTo       DateTime? @map("valid_to") @db.Date
+  scheduleId    String?   @map("schedule_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  activatedAt   DateTime? @map("activated_at")
+
+  company  Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patterns ShiftPattern[]
+
+  @@index([companyId, status])
+  @@map("milking_routines")
 }
 
 model ShiftPatternDay {

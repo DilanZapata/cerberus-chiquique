@@ -57,9 +57,10 @@ export class MilkingRosterDto {
   @Type(() => MilkingRosterWorkerDto)
   workers!: MilkingRosterWorkerDto[];
 
-  /** Primer dia del ciclo de 14 dias (el lunes de la "semana A"). */
+  /** Opcional: lunes de la "semana A", solo para devolver las fechas en la vista previa. */
+  @IsOptional()
   @IsDateString()
-  anchorDate!: string;
+  anchorDate?: string;
 
   @IsOptional()
   @Matches(HHMM)
@@ -77,14 +78,14 @@ export class MilkingRosterDto {
   @Matches(HHMM)
   eveningEnd?: string;
 
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(26)
-  horizonWeeks?: number;
-
-  /** true = solo calcula y devuelve como quedaria, sin crear ni cambiar nada. */
+  /** true = solo calcula y devuelve como quedaria. false = guarda la rutina (no cambia el horario de nadie). */
   @IsOptional()
   @IsBoolean()
   preview?: boolean;
+}
+
+export class EnableMilkingRoutineDto {
+  /** Lunes desde el que la rutina pasa a ser el horario de sus trabajadores. */
+  @IsDateString()
+  startDate!: string;
 }

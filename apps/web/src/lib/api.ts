@@ -389,18 +389,18 @@ export interface MilkingRosterCell {
 
 export interface MilkingRosterGap {
   dayOffset: number;
-  date: string;
+  date: string | null;
   station: number;
   post: 'ORDENO' | 'VAQUERIA';
   missing: number;
 }
 
-export interface MilkingRosterResult {
+/** La planilla de 14 dias de una rutina (semanas A y B). */
+export interface MilkingRosterView {
   feasible: boolean;
-  /** true si la rutina quedo creada y los turnos generados (false en vista previa o si quedan puestos sin cubrir). */
-  created: boolean;
   cycleLengthDays: number;
   stationsCount: number;
+  /** Lunes de la semana A (YYYY-MM-DD), o '' si la rutina todavia no tiene fecha. */
   anchorDate: string;
   workers: Array<{
     userId: string;
@@ -410,35 +410,69 @@ export interface MilkingRosterResult {
     shortDayOffset: number;
     chosenBySystem: boolean;
   }>;
-  days: Array<{ dayOffset: number; date: string; cells: MilkingRosterCell[] }>;
+  days: Array<{ dayOffset: number; date: string | null; cells: MilkingRosterCell[] }>;
   gaps: MilkingRosterGap[];
   vaqueriaCoversByOrdenadores: number;
   warnings: string[];
-  scheduleId: string | null;
-  shiftsGenerated: number;
 }
 
+export interface MilkingRosterResult extends MilkingRosterView {
+  /** true si la rutina quedo guardada (false en vista previa o si quedan puestos sin cubrir). */
+  saved: boolean;
+  routineId: string | null;
+}
+
+/** Una rutina de ordeño guardada. Solo la VIGENTE es el horario actual de sus trabajadores. */
+export interface MilkingRoutine extends MilkingRosterView {
+  id: string;
+  name: string;
+  status: 'GUARDADA' | 'VIGENTE' | 'INACTIVA';
+  createdAt: string;
+  /** Ultimo dia que rigio (solo INACTIVA). */
+  validTo: string | null;
+  morningStart: string;
+  morningEnd: string;
+  eveningStart: string;
+  eveningEnd: string;
+  /** Personas de la rutina que ya no estan activas: impiden habilitarla. */
+  unavailableWorkers: string[];
+}
+
+/** Calcula como queda una rutina (`preview: true`) o la guarda. Guardar no cambia el horario de nadie. */
 export function milkingRoster(
   companyId: string,
   body: {
     name: string;
     stationsCount: number;
     workers: MilkingRosterWorkerInput[];
-    anchorDate: string;
     morningStart?: string;
     morningEnd?: string;
     eveningStart?: string;
     eveningEnd?: string;
-    horizonWeeks?: number;
     preview?: boolean;
   },
 ): Promise<MilkingRosterResult> {
   return apiJson(`/shift-patterns/milking-roster?companyId=${companyId}`, { method: 'POST', body: JSON.stringify(body) });
 }
 
-/** Rutinas de ordeño por roles que estan corriendo hoy (para ver la planilla de semanas A y B). */
-export function getCurrentMilkingRosters(companyId: string): Promise<Array<MilkingRosterResult & { name: string }>> {
-  return apiJson(`/shift-patterns/milking-roster/current?companyId=${companyId}`);
+export function getMilkingRoutines(companyId: string): Promise<MilkingRoutine[]> {
+  return apiJson(`/shift-patterns/milking-routines?companyId=${companyId}`);
+}
+
+/** Habilita una rutina guardada desde un lunes: pasa a ser el horario de sus trabajadores. */
+export function enableMilkingRoutine(
+  companyId: string,
+  routineId: string,
+  startDate: string,
+): Promise<{ routineId: string; startDate: string; shiftsGenerated: number; replaced: Array<{ name: string; leftWithoutRoutine: string[] }> }> {
+  return apiJson(`/shift-patterns/milking-routines/${routineId}/enable?companyId=${companyId}`, {
+    method: 'POST',
+    body: JSON.stringify({ startDate }),
+  });
+}
+
+export function deleteMilkingRoutine(companyId: string, routineId: string): Promise<{ deleted: boolean }> {
+  return apiJson(`/shift-patterns/milking-routines/${routineId}?companyId=${companyId}`, { method: 'DELETE' });
 }
 
 // ---- Parametros de nomina (versionado legal) ----
