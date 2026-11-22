@@ -1,12 +1,20 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { planShiftRotation, planMilkingRotation, workerDayKindOnSharedDay, MILKING_CYCLE_LENGTH_DAYS } from '@cerberus/cst-rules';
+import {
+  planShiftRotation,
+  planMilkingRotation,
+  planMilkingRoster,
+  workerDayKindOnSharedDay,
+  MILKING_CYCLE_LENGTH_DAYS,
+  MilkingRosterCell,
+} from '@cerberus/cst-rules';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays, combineDateAndTime, daysBetween, hhmmToTime } from '../../common/utils/time.util';
 import { CreateShiftPatternDto } from './dto/create-shift-pattern.dto';
 import { AssignPatternToTeamDto, AssignPatternToUserDto } from './dto/assign-pattern.dto';
 import { SmartGenerateShiftPatternDto } from './dto/smart-generate.dto';
 import { SmartGenerateMilkingDto } from './dto/smart-generate-milking.dto';
+import { MilkingRosterDto } from './dto/milking-roster.dto';
 
 const ROLE_LABELS: Record<string, string> = {
   ORDENADOR: 'Ordeñador',
@@ -14,6 +22,19 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const GENERATION_HORIZON_WEEKS = 4;
+
+/** Texto del puesto de un dia de la rutina de ordeño por roles (se guarda en la plantilla y en el turno). */
+function milkingPostLabel(cell: MilkingRosterCell): string | null {
+  if (cell.kind === 'DESCANSO' || cell.station === undefined) return null;
+  const number = cell.station + 1;
+  if (cell.kind === 'CORTO') return `Ordeñador (Ordeño ${number}) · media jornada`;
+  const base = cell.post === 'VAQUERIA' ? `Vaquero (Vaquería ${number})` : `Ordeñador (Ordeño ${number})`;
+  return cell.isCover ? `${base} · cubre` : base;
+}
+
+function toDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
 
 @Injectable()
 export class ShiftPatternsService {
@@ -304,6 +325,151 @@ export class ShiftPatternsService {
     };
   }
 
+  /**
+   * Rutina de ordeño POR ROLES: cada persona tiene su puesto base (ordeñador
+   * fijo o de relevo de un ordeño, vaquero de una vaqueria, o comodin) y el
+   * mismo ciclo de descanso de 14 dias. El sistema reparte los puestos de
+   * cada dia y dice que dias quedan sin cubrir. Con `preview` solo calcula;
+   * sin `preview` crea las plantillas, asigna a cada persona y genera los
+   * turnos -- y solo si ningun puesto queda sin cubrir.
+   */
+  async milkingRoster(companyId: string, dto: MilkingRosterDto) {
+    const userIds = dto.workers.map((w) => w.userId);
+    if (new Set(userIds).size !== userIds.length) {
+      throw new BadRequestException('Hay una persona repetida en la rutina.');
+    }
+    const users = await this.prisma.user.findMany({ where: { id: { in: userIds }, companyId }, select: { id: true, fullName: true } });
+    if (users.length !== userIds.length) {
+      throw new BadRequestException('Alguna de las personas seleccionadas no pertenece a esta empresa.');
+    }
+    for (const worker of dto.workers) {
+      if (worker.role !== 'COMODIN' && (worker.homeStation ?? 0) >= dto.stationsCount) {
+        throw new BadRequestException(`El ordeño base de una persona no existe (solo hay ${dto.stationsCount} ordeño(s)).`);
+      }
+    }
+    const nameById = new Map(users.map((u) => [u.id, u.fullName]));
+
+    const plan = planMilkingRoster({
+      stationsCount: dto.stationsCount,
+      workers: dto.workers.map((w) => ({ id: w.userId, role: w.role, homeStation: w.homeStation, shortDayOffset: w.shortDayOffset })),
+    });
+
+    const anchorDate = new Date(`${dto.anchorDate}T00:00:00`);
+    const offsetByWorker = new Map(plan.workerOffsets.map((w) => [w.workerId, w]));
+    const result = {
+      feasible: plan.feasible,
+      created: false,
+      cycleLengthDays: plan.cycleLengthDays,
+      stationsCount: plan.stationsCount,
+      anchorDate: dto.anchorDate,
+      workers: dto.workers.map((w) => ({
+        userId: w.userId,
+        fullName: nameById.get(w.userId) ?? w.userId,
+        role: w.role,
+        homeStation: w.role === 'COMODIN' ? null : w.homeStation ?? 0,
+        shortDayOffset: offsetByWorker.get(w.userId)?.offset ?? 0,
+        chosenBySystem: offsetByWorker.get(w.userId)?.chosenBySystem ?? false,
+      })),
+      days: plan.days.map((day) => ({
+        dayOffset: day.dayOffset,
+        date: toDateKey(addDays(anchorDate, day.dayOffset)),
+        cells: day.cells.map((cell) => ({
+          userId: cell.workerId,
+          kind: cell.kind,
+          post: cell.post ?? null,
+          station: cell.station ?? null,
+          isCover: cell.isCover,
+        })),
+      })),
+      gaps: plan.gaps.map((gap) => ({ ...gap, date: toDateKey(addDays(anchorDate, gap.dayOffset)) })),
+      vaqueriaCoversByOrdenadores: plan.vaqueriaCoversByOrdenadores,
+      warnings: plan.warnings,
+      scheduleId: null as string | null,
+      shiftsGenerated: 0,
+    };
+
+    if (dto.preview || !plan.feasible) return result;
+
+    const morningStart = dto.morningStart ?? '04:00';
+    const morningEnd = dto.morningEnd ?? '08:00';
+    const eveningStart = dto.eveningStart ?? '16:00';
+    const eveningEnd = dto.eveningEnd ?? '20:00';
+    const lunchMinutes = Math.max(0, Math.round((hhmmToTime(eveningStart).getTime() - hhmmToTime(morningEnd).getTime()) / 60_000));
+    const horizon = addDays(anchorDate, (dto.horizonWeeks ?? 8) * 7);
+    const dayBeforeAnchor = addDays(anchorDate, -1);
+
+    // Mismo horario compartido que la rutina de ordeño clasica: resuelve el
+    // hueco de medio dia entre el ordeño de la manana y el de la tarde.
+    const schedule = await this.prisma.schedule.create({
+      data: {
+        companyId,
+        name: `${dto.name} - Horario`,
+        defaultLunchMinutes: lunchMinutes,
+        lunchWindowStart: hhmmToTime(morningEnd),
+        lunchWindowEnd: hhmmToTime(eveningStart),
+        lunchToleranceMinutes: 30,
+      },
+    });
+    result.scheduleId = schedule.id;
+
+    for (const worker of dto.workers) {
+      const cells = plan.days.map((day) => day.cells.find((cell) => cell.workerId === worker.userId)!);
+
+      const pattern = await this.prisma.shiftPattern.create({
+        data: {
+          companyId,
+          name: `${dto.name} - ${nameById.get(worker.userId) ?? worker.userId}`,
+          cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS,
+          days: {
+            create: cells.map((cell, dayOffset) => {
+              if (cell.kind === 'DESCANSO') {
+                return { dayOffset, isRestDay: true, rotationType: 'DESCANSO' as const, startTime: null, endTime: null, lunchMinutes: 0, notes: null };
+              }
+              if (cell.kind === 'CORTO') {
+                return {
+                  dayOffset,
+                  isRestDay: false,
+                  rotationType: 'DIURNO' as const,
+                  startTime: hhmmToTime(morningStart),
+                  endTime: hhmmToTime(morningEnd),
+                  lunchMinutes: 0,
+                  notes: milkingPostLabel(cell),
+                };
+              }
+              return {
+                dayOffset,
+                isRestDay: false,
+                rotationType: 'MIXTO' as const,
+                startTime: hhmmToTime(morningStart),
+                endTime: hhmmToTime(eveningEnd),
+                lunchMinutes,
+                notes: milkingPostLabel(cell),
+              };
+            }),
+          },
+        },
+      });
+
+      // La rutina nueva reemplaza, desde su fecha de inicio, la rutina y el
+      // horario que la persona tuviera: se les pone fecha de fin (no se borran).
+      const stillActive = { userId: worker.userId, OR: [{ validTo: null }, { validTo: { gte: anchorDate } }] };
+      await this.prisma.userShiftPatternAssignment.updateMany({ where: stillActive, data: { validTo: dayBeforeAnchor } });
+      await this.prisma.userSchedule.updateMany({ where: stillActive, data: { validTo: dayBeforeAnchor } });
+
+      await this.prisma.userShiftPatternAssignment.create({
+        data: { userId: worker.userId, patternId: pattern.id, anchorDate, validFrom: anchorDate },
+      });
+      await this.prisma.userSchedule.create({
+        data: { userId: worker.userId, scheduleId: schedule.id, validFrom: anchorDate },
+      });
+
+      result.shiftsGenerated += await this.generateShiftsForUser(worker.userId, anchorDate, horizon);
+    }
+
+    result.created = true;
+    return result;
+  }
+
   /** Asigna una plantilla a cada integrante activo de un departamento, con un ancla opcionalmente desfasada por persona. */
   async assignToTeam(patternId: string, dto: AssignPatternToTeamDto) {
     const members = await this.prisma.user.findMany({
@@ -389,7 +555,7 @@ export class ShiftPatternsService {
         plannedStart: patternDay.startTime ? combineDateAndTime(day, patternDay.startTime) : day,
         plannedEnd: patternDay.endTime ? combineDateAndTime(day, patternDay.endTime) : day,
         plannedLunchMinutes: patternDay.lunchMinutes,
-        notes: `Generado por rutina "${assignment.pattern.name ?? ''}"`.trim(),
+        notes: patternDay.notes ?? `Generado por rutina "${assignment.pattern.name ?? ''}"`.trim(),
       },
       update: {
         rotationType: patternDay.rotationType,
@@ -397,6 +563,9 @@ export class ShiftPatternsService {
         plannedStart: patternDay.startTime ? combineDateAndTime(day, patternDay.startTime) : day,
         plannedEnd: patternDay.endTime ? combineDateAndTime(day, patternDay.endTime) : day,
         plannedLunchMinutes: patternDay.lunchMinutes,
+        // El puesto del dia viene de la plantilla (rutina por roles); las
+        // plantillas sin puesto por dia no pisan la nota que ya tenga el turno.
+        ...(patternDay.notes ? { notes: patternDay.notes } : {}),
       },
     });
     return true;

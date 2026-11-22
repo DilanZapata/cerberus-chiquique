@@ -686,6 +686,8 @@ model ShiftPatternDay {
   startTime    DateTime?     @map("start_time") @db.Time
   endTime      DateTime?     @map("end_time") @db.Time
   lunchMinutes Int           @default(60) @map("lunch_minutes")
+  // Puesto de ese dia (ej. "Ordeñador (Ordeño 1)"); se copia a shifts.notes al generar el turno.
+  notes        String?
 
   pattern ShiftPattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
 

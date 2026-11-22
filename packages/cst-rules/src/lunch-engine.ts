@@ -163,11 +163,15 @@ export function resolveLunch(
 
     // La hora de almuerzo que le corresponde a esta jornada: la ventana que
     // cae sobre el turno programado (o, sin turno programado, sobre lo que
-    // trabajo). Puede ser la del dia siguiente en un turno nocturno.
+    // trabajo). Puede ser la del dia siguiente en un turno nocturno. Una
+    // ventana que apenas TOCA el turno (empieza justo cuando el turno termina,
+    // ej. media jornada de ordeño 4:00-8:00 con descanso de 8:00 a 16:00)
+    // tambien cuenta como "la de este turno": asi cae en "el almuerzo no cabe
+    // en el turno" (no se resta nada) en vez de en el respaldo de mas abajo.
     const reference = plannedShift ?? { start: checkIn, end: checkOut };
     const lunchWindow = [-1, 0, 1]
       .map((dayOffset) => windowInstance(reference.start, dayOffset))
-      .find((window) => window.start < reference.end && window.end > reference.start);
+      .find((window) => window.start <= reference.end && window.end >= reference.start);
 
     let lunchStart: Date;
     if (lunchWindow) {
@@ -192,6 +196,9 @@ export function resolveLunch(
       // cerca del final de la jornada como respaldo razonable -- pero solo si
       // la persona estuvo trabajando a mitad del turno, que es cuando se
       // asume la comida; a quien solo hizo una punta del turno no se le resta.
+      // Un turno que ni siquiera es mas largo que el almuerzo no tiene comida que descontar.
+      const plannedMinutes = (plannedShift.end.getTime() - plannedShift.start.getTime()) / MINUTE_MS;
+      if (plannedMinutes <= policy.defaultLunchMinutes) return fullDay;
       const shiftMiddle = (plannedShift.start.getTime() + plannedShift.end.getTime()) / 2;
       const halfLunch = (lunchMinutes * MINUTE_MS) / 2;
       if (checkIn.getTime() > shiftMiddle - halfLunch || checkOut.getTime() < shiftMiddle + halfLunch) return fullDay;

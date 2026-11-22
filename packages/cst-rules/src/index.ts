@@ -9,3 +9,4 @@ export * from './math-utils';
 export * from './shift-rotation-planner';
 export * from './milking-rotation-planner';
 export * from './overtime-authorization';
+export * from './milking-roster-planner';

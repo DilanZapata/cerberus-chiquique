@@ -6,6 +6,7 @@ import { AssignPatternToTeamDto, AssignPatternToUserDto } from './dto/assign-pat
 import { GenerateShiftsDto } from './dto/generate-shifts.dto';
 import { SmartGenerateShiftPatternDto } from './dto/smart-generate.dto';
 import { SmartGenerateMilkingDto } from './dto/smart-generate-milking.dto';
+import { MilkingRosterDto } from './dto/milking-roster.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 
 @Roles(UserRole.ADMIN, UserRole.HR)
@@ -41,6 +42,12 @@ export class ShiftPatternsController {
   @Post('smart-generate-milking')
   smartGenerateMilking(@Query('companyId') companyId: string, @Body() dto: SmartGenerateMilkingDto) {
     return this.shiftPatternsService.smartGenerateMilking(companyId, dto);
+  }
+
+  /** Rutina de ordeño por roles. Con `preview: true` solo calcula como quedaria, sin crear nada. */
+  @Post('milking-roster')
+  milkingRoster(@Query('companyId') companyId: string, @Body() dto: MilkingRosterDto) {
+    return this.shiftPatternsService.milkingRoster(companyId, dto);
   }
 
   @Post('generate')

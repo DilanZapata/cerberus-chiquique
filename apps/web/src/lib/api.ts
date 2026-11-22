@@ -365,6 +365,77 @@ export function smartGenerateMilkingRoutine(
   return apiJson(`/shift-patterns/smart-generate-milking?companyId=${companyId}`, { method: 'POST', body: JSON.stringify(body) });
 }
 
+// ---- Rutina de ordeño por roles (ordeñador fijo / relevo / vaquero / comodin) ----
+
+export type MilkingRosterRole = 'ORDENADOR' | 'RELEVO' | 'VAQUERO' | 'COMODIN';
+
+export interface MilkingRosterWorkerInput {
+  userId: string;
+  role: MilkingRosterRole;
+  /** Ordeño base, empezando en 0. No aplica al comodin. */
+  homeStation?: number;
+  /** Dia del ciclo (0 = fecha de inicio) de la media jornada. Sin valor: lo escoge el sistema. */
+  shortDayOffset?: number;
+}
+
+export interface MilkingRosterCell {
+  userId: string;
+  kind: 'DESCANSO' | 'COMPLETO' | 'CORTO';
+  post: 'ORDENO' | 'VAQUERIA' | null;
+  station: number | null;
+  /** true si ese dia cubre un puesto que no es el suyo. */
+  isCover: boolean;
+}
+
+export interface MilkingRosterGap {
+  dayOffset: number;
+  date: string;
+  station: number;
+  post: 'ORDENO' | 'VAQUERIA';
+  missing: number;
+}
+
+export interface MilkingRosterResult {
+  feasible: boolean;
+  /** true si la rutina quedo creada y los turnos generados (false en vista previa o si quedan puestos sin cubrir). */
+  created: boolean;
+  cycleLengthDays: number;
+  stationsCount: number;
+  anchorDate: string;
+  workers: Array<{
+    userId: string;
+    fullName: string;
+    role: MilkingRosterRole;
+    homeStation: number | null;
+    shortDayOffset: number;
+    chosenBySystem: boolean;
+  }>;
+  days: Array<{ dayOffset: number; date: string; cells: MilkingRosterCell[] }>;
+  gaps: MilkingRosterGap[];
+  vaqueriaCoversByOrdenadores: number;
+  warnings: string[];
+  scheduleId: string | null;
+  shiftsGenerated: number;
+}
+
+export function milkingRoster(
+  companyId: string,
+  body: {
+    name: string;
+    stationsCount: number;
+    workers: MilkingRosterWorkerInput[];
+    anchorDate: string;
+    morningStart?: string;
+    morningEnd?: string;
+    eveningStart?: string;
+    eveningEnd?: string;
+    horizonWeeks?: number;
+    preview?: boolean;
+  },
+): Promise<MilkingRosterResult> {
+  return apiJson(`/shift-patterns/milking-roster?companyId=${companyId}`, { method: 'POST', body: JSON.stringify(body) });
+}
+
 // ---- Parametros de nomina (versionado legal) ----
 
 export interface PayrollConfigVersion {

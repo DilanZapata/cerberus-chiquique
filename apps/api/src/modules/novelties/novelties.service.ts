@@ -27,7 +27,7 @@ import {
   TimeLogSource,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { addDays, combineDateAndTime, startOfLocalDay, timeToHHmm } from '../../common/utils/time.util';
+import { addDays, combineDateAndTime, daysBetween, startOfLocalDay, timeToHHmm } from '../../common/utils/time.util';
 import { findShiftMarks } from '../../common/utils/shift-marks.util';
 import { resolveActiveCycleWeek } from '../../common/utils/rotating-schedule.util';
 import { PayrollConfigService } from '../payroll-config/payroll-config.service';
@@ -463,17 +463,70 @@ export class NoveltiesService {
       }
     }
 
+    // Rutinas por ciclo (ej. ordeño: 44 h una semana y 40 h la otra): el tope
+    // semanal se mide como promedio del ciclo, no semana por semana.
+    const weeklyCapHours = await this.getWeeklyOrdinaryCapHours(userId, date, Number(payrollConfig.maxWeeklyHours));
+
     return calculateDailyNovelties({
       userId,
       workDate: date.toISOString().slice(0, 10),
       marks,
       lunchPolicy,
-      payrollConfig,
+      payrollConfig: weeklyCapHours === Number(payrollConfig.maxWeeklyHours) ? payrollConfig : { ...payrollConfig, maxWeeklyHours: weeklyCapHours },
       plannedShift: shiftResolution.plannedShift,
       isScheduledRestDay: shiftResolution.isScheduledRestDay,
       weekOrdinaryMinutesAccumulated,
       weekOvertimeMinutesAccumulated,
     });
+  }
+
+  /**
+   * Tope de horas ordinarias de la semana (lunes a domingo) de `date`.
+   *
+   * Normalmente es el tope legal (`legalMaxWeeklyHours`, 42 h). Pero quien
+   * trabaja con una rutina por ciclo de semanas completas (ej. ordeño, ciclo
+   * de 14 dias: una semana de 44 h y la siguiente de 40 h) cumple el tope en
+   * PROMEDIO: 84 h en dos semanas = 42 h semanales. Para esas personas, si
+   * el promedio programado del ciclo no pasa del tope legal, la semana larga
+   * admite sus horas programadas como ordinarias (44), en vez de convertir
+   * las 2 ultimas en hora extra. Lo que se trabaje por fuera del turno
+   * programado sigue siendo extra, como siempre.
+   */
+  private async getWeeklyOrdinaryCapHours(userId: string, date: Date, legalMaxWeeklyHours: number): Promise<number> {
+    const assignment = await this.prisma.userShiftPatternAssignment.findFirst({
+      where: { userId, validFrom: { lte: date }, OR: [{ validTo: null }, { validTo: { gte: date } }] },
+      orderBy: { validFrom: 'desc' },
+      include: { pattern: { include: { days: true } } },
+    });
+    if (!assignment) return legalMaxWeeklyHours;
+
+    const cycleLength = assignment.pattern.cycleLengthDays;
+    if (cycleLength < 14 || cycleLength % 7 !== 0) return legalMaxWeeklyHours;
+
+    const plannedHoursByOffset = new Map<number, number>();
+    for (const day of assignment.pattern.days) {
+      if (day.isRestDay || !day.startTime || !day.endTime) continue;
+      let minutes = (day.endTime.getTime() - day.startTime.getTime()) / 60_000;
+      if (minutes <= 0) minutes += 24 * 60; // turno que cruza la medianoche
+      plannedHoursByOffset.set(day.dayOffset, Math.max(0, minutes - day.lunchMinutes) / 60);
+    }
+
+    // Semanas completas del ciclo, contadas desde el lunes de la semana de
+    // `date`. Como la rutina se repite, cualquier ventana de `cycleLength`
+    // dias contiene exactamente un ciclo.
+    const monday = addDays(startOfLocalDay(date), -((date.getDay() + 6) % 7));
+    let cycleHours = 0;
+    let thisWeekHours = 0;
+    for (let i = 0; i < cycleLength; i++) {
+      const offset = (((daysBetween(assignment.anchorDate, addDays(monday, i)) % cycleLength) + cycleLength) % cycleLength);
+      const hours = plannedHoursByOffset.get(offset) ?? 0;
+      cycleHours += hours;
+      if (i < 7) thisWeekHours += hours;
+    }
+
+    const averageWeeklyHours = cycleHours / (cycleLength / 7);
+    if (averageWeeklyHours > legalMaxWeeklyHours + 0.001) return legalMaxWeeklyHours;
+    return Math.max(legalMaxWeeklyHours, thisWeekHours);
   }
 
   /** Suma en minutos, para la semana ISO en curso (antes de `date`), el campo indicado del resultado diario. */
@@ -651,11 +704,25 @@ export class NoveltiesService {
    *  2. Horario asignado directamente al empleado (UserSchedule) - anula el del cargo.
    *  3. Horario del cargo asignado al empleado (Position.schedule) - el caso comun.
    */
+  /**
+   * Turno generado (rutina rotativa) de una persona para un dia.
+   *
+   * Usa `findFirst` a proposito, NO `findUnique`: cuando dos `findUnique` del
+   * mismo modelo se lanzan a la vez (ej. el turno de hoy y el de ayer en
+   * `resolveMarkContext`), Prisma los junta en una sola consulta y empareja
+   * los resultados comparando la fecha en memoria. `date` llega como
+   * medianoche LOCAL (05:00 UTC en Bogota) y la columna DATE vuelve como
+   * medianoche UTC, asi que no coincidian y el turno "no existia": el kiosco
+   * trataba a la gente de rutinas (ordeño, vigilantes) como si no tuviera
+   * turno ese dia. Con `findFirst` la comparacion la hace la base de datos.
+   */
+  private findShiftForDay(userId: string, date: Date) {
+    return this.prisma.shift.findFirst({ where: { userId, workDate: date } });
+  }
+
   /** Publico: reutilizado por resolveMarkContext y por el cierre automatico de jornadas (jornada-cierre.service.ts). */
   async getPlannedShift(userId: string, date: Date): Promise<ShiftResolution> {
-    const shift = await this.prisma.shift.findUnique({
-      where: { userId_workDate: { userId, workDate: date } },
-    });
+    const shift = await this.findShiftForDay(userId, date);
     if (shift) {
       if (shift.isRestDay) return { plannedShift: undefined, isScheduledRestDay: true };
       return { plannedShift: { start: shift.plannedStart, end: shift.plannedEnd }, isScheduledRestDay: false };
@@ -678,9 +745,7 @@ export class NoveltiesService {
    * la logica de resolucion por su cuenta.
    */
   async getScheduleInfoForDate(userId: string, date: Date): Promise<ScheduleInfoForDate> {
-    const shift = await this.prisma.shift.findUnique({
-      where: { userId_workDate: { userId, workDate: date } },
-    });
+    const shift = await this.findShiftForDay(userId, date);
     if (shift) {
       return {
         hasSchedule: true,
