@@ -436,6 +436,11 @@ export function milkingRoster(
   return apiJson(`/shift-patterns/milking-roster?companyId=${companyId}`, { method: 'POST', body: JSON.stringify(body) });
 }
 
+/** Rutinas de ordeño por roles que estan corriendo hoy (para ver la planilla de semanas A y B). */
+export function getCurrentMilkingRosters(companyId: string): Promise<Array<MilkingRosterResult & { name: string }>> {
+  return apiJson(`/shift-patterns/milking-roster/current?companyId=${companyId}`);
+}
+
 // ---- Parametros de nomina (versionado legal) ----
 
 export interface PayrollConfigVersion {

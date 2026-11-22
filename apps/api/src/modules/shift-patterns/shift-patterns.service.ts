@@ -32,6 +32,18 @@ function milkingPostLabel(cell: MilkingRosterCell): string | null {
   return cell.isCover ? `${base} · cubre` : base;
 }
 
+/** Lee de vuelta el puesto guardado por `milkingPostLabel` (para mostrar una rutina ya creada). */
+function parseMilkingPostLabel(notes: string | null): { post: 'ORDENO' | 'VAQUERIA'; station: number; isCover: boolean; isShortDay: boolean } | null {
+  const match = notes?.match(/^(Ordeñador|Vaquero) \((?:Ordeño|Vaquería) (\d+)\)(.*)$/);
+  if (!match) return null;
+  return {
+    post: match[1] === 'Vaquero' ? 'VAQUERIA' : 'ORDENO',
+    station: Number(match[2]) - 1,
+    isCover: match[3].includes('cubre'),
+    isShortDay: match[3].includes('media jornada'),
+  };
+}
+
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -468,6 +480,118 @@ export class ShiftPatternsService {
 
     result.created = true;
     return result;
+  }
+
+  /**
+   * Rutinas de ordeño por roles que estan vigentes en `dateIso` (hoy si no
+   * viene), reconstruidas desde las plantillas ya creadas, en el mismo
+   * formato que devuelve `milkingRoster`: para volver a ver la planilla de
+   * las semanas A y B en cualquier momento, no solo al crearla.
+   */
+  async currentMilkingRosters(companyId: string, dateIso?: string) {
+    const date = dateIso ? new Date(`${dateIso.slice(0, 10)}T00:00:00`) : new Date(new Date().setHours(0, 0, 0, 0));
+    const assignments = await this.prisma.userShiftPatternAssignment.findMany({
+      where: {
+        user: { companyId, isActive: true },
+        validFrom: { lte: date },
+        OR: [{ validTo: null }, { validTo: { gte: date } }],
+        pattern: { cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS, days: { some: { notes: { not: null } } } },
+      },
+      orderBy: { validFrom: 'desc' },
+      include: { user: { select: { id: true, fullName: true } }, pattern: { include: { days: true } } },
+    });
+
+    // Una asignacion por persona (la mas reciente), agrupadas por rutina.
+    const seenUsers = new Set<string>();
+    const groups = new Map<string, { name: string; anchorDate: Date; members: typeof assignments }>();
+    for (const assignment of assignments) {
+      if (seenUsers.has(assignment.userId)) continue;
+      seenUsers.add(assignment.userId);
+      const suffix = ` - ${assignment.user.fullName}`;
+      const name = assignment.pattern.name.endsWith(suffix) ? assignment.pattern.name.slice(0, -suffix.length) : assignment.pattern.name;
+      const key = `${name}|${toDateKey(assignment.anchorDate)}`;
+      if (!groups.has(key)) groups.set(key, { name, anchorDate: assignment.anchorDate, members: [] });
+      groups.get(key)!.members.push(assignment);
+    }
+
+    return [...groups.values()].map((group) => {
+      // `anchorDate` es columna DATE (medianoche UTC): se lee con getters UTC.
+      const anchorKey = group.anchorDate.toISOString().slice(0, 10);
+      const anchorLocal = new Date(`${anchorKey}T00:00:00`);
+
+      const rows = group.members.map((member) => {
+        const cells = Array.from({ length: MILKING_CYCLE_LENGTH_DAYS }, (_, dayOffset) => {
+          const day = member.pattern.days.find((d) => d.dayOffset === dayOffset);
+          const parsed = parseMilkingPostLabel(day?.notes ?? null);
+          if (!day || day.isRestDay || !parsed) {
+            return { userId: member.userId, kind: 'DESCANSO' as const, post: null, station: null, isCover: false };
+          }
+          return {
+            userId: member.userId,
+            kind: parsed.isShortDay ? ('CORTO' as const) : ('COMPLETO' as const),
+            post: parsed.post,
+            station: parsed.station,
+            isCover: parsed.isCover,
+          };
+        });
+
+        // El puesto base no se guarda: se deduce de donde trabaja la persona.
+        const fullDays = cells.filter((c) => c.kind === 'COMPLETO');
+        const countByPost = new Map<string, number>();
+        for (const cell of fullDays) countByPost.set(`${cell.post}:${cell.station}`, (countByPost.get(`${cell.post}:${cell.station}`) ?? 0) + 1);
+        const hasCover = fullDays.some((c) => c.isCover);
+        const [mainPost] = [...countByPost.entries()].sort((a, b) => b[1] - a[1])[0] ?? ['ORDENO:0'];
+        const [mainKind, mainStation] = mainPost.split(':');
+        const isComodin = countByPost.size > 1 && !hasCover;
+        const role = isComodin ? 'COMODIN' : mainKind === 'VAQUERIA' ? 'VAQUERO' : hasCover ? 'RELEVO' : 'ORDENADOR';
+        const shortDayOffset = cells.findIndex((c) => c.kind === 'CORTO');
+
+        return {
+          worker: {
+            userId: member.userId,
+            fullName: member.user.fullName,
+            role: role as 'ORDENADOR' | 'RELEVO' | 'VAQUERO' | 'COMODIN',
+            homeStation: isComodin ? null : Number(mainStation),
+            shortDayOffset: Math.max(0, shortDayOffset),
+            chosenBySystem: false,
+          },
+          cells,
+        };
+      });
+
+      const stationsCount = Math.max(1, ...rows.flatMap((row) => row.cells.map((cell) => (cell.station ?? 0) + 1)));
+      const days = Array.from({ length: MILKING_CYCLE_LENGTH_DAYS }, (_, dayOffset) => ({
+        dayOffset,
+        date: toDateKey(addDays(anchorLocal, dayOffset)),
+        cells: rows.map((row) => row.cells[dayOffset]),
+      }));
+      const gaps = days.flatMap((day) =>
+        Array.from({ length: stationsCount }, (_, station) => {
+          const ordenadores = day.cells.filter((c) => c.kind === 'COMPLETO' && c.post === 'ORDENO' && c.station === station).length;
+          const vaqueros = day.cells.filter((c) => c.kind === 'COMPLETO' && c.post === 'VAQUERIA' && c.station === station).length;
+          return [
+            ...(ordenadores < 2 ? [{ dayOffset: day.dayOffset, date: day.date, station, post: 'ORDENO' as const, missing: 2 - ordenadores }] : []),
+            ...(vaqueros < 1 ? [{ dayOffset: day.dayOffset, date: day.date, station, post: 'VAQUERIA' as const, missing: 1 }] : []),
+          ];
+        }).flat(),
+      );
+
+      return {
+        name: group.name,
+        feasible: gaps.length === 0,
+        created: true,
+        cycleLengthDays: MILKING_CYCLE_LENGTH_DAYS,
+        stationsCount,
+        anchorDate: anchorKey,
+        workers: rows.map((row) => row.worker),
+        days,
+        gaps,
+        vaqueriaCoversByOrdenadores: 0,
+        warnings: [] as string[],
+        scheduleId: null as string | null,
+        shiftsGenerated: 0,
+      };
+    });
   }
 
   /** Asigna una plantilla a cada integrante activo de un departamento, con un ancla opcionalmente desfasada por persona. */

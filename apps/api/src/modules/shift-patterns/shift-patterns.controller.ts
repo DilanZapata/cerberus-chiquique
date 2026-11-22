@@ -44,6 +44,12 @@ export class ShiftPatternsController {
     return this.shiftPatternsService.smartGenerateMilking(companyId, dto);
   }
 
+  /** Rutinas de ordeño por roles vigentes (hoy, o en `date`), para ver la planilla de semanas A y B. */
+  @Get('milking-roster/current')
+  currentMilkingRosters(@Query('companyId') companyId: string, @Query('date') date?: string) {
+    return this.shiftPatternsService.currentMilkingRosters(companyId, date);
+  }
+
   /** Rutina de ordeño por roles. Con `preview: true` solo calcula como quedaria, sin crear nada. */
   @Post('milking-roster')
   milkingRoster(@Query('companyId') companyId: string, @Body() dto: MilkingRosterDto) {

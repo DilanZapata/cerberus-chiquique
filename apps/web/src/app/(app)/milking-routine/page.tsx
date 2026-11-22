@@ -2,7 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Milk, AlertTriangle, CheckCircle2, Eye, Sparkles } from 'lucide-react';
-import { Employee, MilkingRosterCell, MilkingRosterResult, MilkingRosterRole, getEmployees, milkingRoster } from '@/lib/api';
+import {
+  Employee,
+  MilkingRosterCell,
+  MilkingRosterResult,
+  MilkingRosterRole,
+  getCurrentMilkingRosters,
+  getEmployees,
+  milkingRoster,
+} from '@/lib/api';
 import { getCompanyId } from '@/lib/auth';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card } from '@/components/ui/Card';
@@ -18,16 +26,17 @@ const ROLE_OPTIONS: Array<{ value: MilkingRosterRole; label: string; help: strin
   { value: 'VAQUERO', label: 'Vaquero', help: 'Siempre en su vaquería. Su media jornada la hace ordeñando.' },
   { value: 'COMODIN', label: 'Comodín', help: 'Cubre la vaquería cuando el vaquero descansa, o el ordeño que más lo necesite.' },
 ];
-const ROLE_LABEL: Record<MilkingRosterRole, string> = {
-  ORDENADOR: 'Ordeñador fijo',
-  RELEVO: 'Relevo',
-  VAQUERO: 'Vaquero',
-  COMODIN: 'Comodín',
-};
+// Colores de la planilla, como la hoja de la finca: un color por ordeño (el
+// del sitio donde se trabaja ese dia), amarillo la media jornada, blanco el descanso.
+const STATION_COLORS = ['#f5c6ec', '#b5e8c1', '#bcdaf8', '#d8ccf6', '#bdebe0', '#f9d3bd'];
+const SHORT_DAY_COLOR = '#fff34a';
 
-// Un color por ordeño (el fondo distingue el sitio; el texto va siempre en tinta normal).
-const STATION_TINTS = ['bg-series-magenta/20', 'bg-series-green/15', 'bg-series-blue/15', 'bg-series-violet/15', 'bg-series-aqua/15', 'bg-series-orange/15'];
-const SHORT_DAY_TINT = 'bg-series-yellow/30';
+// La planilla necesita mas ancho que el resto de la pagina para que las dos
+// semanas quepan lado a lado: en pantallas anchas la tarjeta se sale del ancho
+// maximo del contenido (queda centrada en el espacio a la derecha del menu).
+// (Con margen negativo y no con transform: la tarjeta ya usa transform para su animacion.)
+const WIDE_CARD =
+  'min-[1500px]:w-[min(100vw-18.5rem,1500px)] min-[1500px]:max-w-none min-[1500px]:ml-[calc((100%-min(100vw-18.5rem,1500px))/2)]';
 
 const WEEKDAY_LABELS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const MONTH_LABELS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -60,10 +69,32 @@ function cellHours(cell: MilkingRosterCell): number {
   return cell.kind === 'COMPLETO' ? 8 : cell.kind === 'CORTO' ? 4 : 0;
 }
 
-function cellText(cell: MilkingRosterCell): string {
-  if (cell.kind === 'DESCANSO' || cell.station === null) return 'Descanso';
-  const place = cell.post === 'VAQUERIA' ? `Vaq ${cell.station + 1}` : `Ord ${cell.station + 1}`;
-  return `${cellHours(cell)} · ${place}`;
+type RosterWorker = MilkingRosterResult['workers'][number];
+
+/** Orden de la planilla: por ordeño (ordeñadores y luego su vaquero) y los comodines al final. */
+function sheetOrder(workers: RosterWorker[]): RosterWorker[] {
+  const rank = (w: RosterWorker) => (w.role === 'COMODIN' ? 1e6 : (w.homeStation ?? 0) * 10 + (w.role === 'VAQUERO' ? 1 : 0));
+  return workers.map((w, i) => ({ w, i })).sort((a, b) => rank(a.w) - rank(b.w) || a.i - b.i).map((x) => x.w);
+}
+
+function locationLabel(worker: RosterWorker, stationsCount: number): string {
+  if (worker.role === 'COMODIN') return 'COMODÍN';
+  const number = stationsCount > 1 ? ` ${(worker.homeStation ?? 0) + 1}` : '';
+  return worker.role === 'VAQUERO' ? `Vaquería${number}` : `ORDEÑO${number}`;
+}
+
+/**
+ * Texto de la casilla, igual que en la hoja: en su propio puesto solo las
+ * horas ("8", o "8 VAQ" el vaquero); si ese dia esta en otro sitio se dice
+ * cual ("8 ORD 1", "8 VAQ 2"); la media jornada siempre dice donde ("4 ORD 1").
+ */
+function sheetCellText(worker: RosterWorker, cell: MilkingRosterCell, stationsCount: number): string {
+  if (cell.kind === 'DESCANSO' || cell.station === null) return 'DESCANSO';
+  const number = stationsCount > 1 ? ` ${cell.station + 1}` : '';
+  if (cell.kind === 'CORTO') return `4 ORD${number}`;
+  const atHome = worker.role !== 'COMODIN' && worker.homeStation === cell.station;
+  if (cell.post === 'VAQUERIA') return atHome && worker.role === 'VAQUERO' ? '8 VAQ' : `8 VAQ${number}`;
+  return atHome && worker.role !== 'VAQUERO' ? '8' : `8 ORD${number}`;
 }
 
 export default function MilkingRoutinePage() {
@@ -81,10 +112,16 @@ export default function MilkingRoutinePage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<MilkingRosterResult | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [current, setCurrent] = useState<Array<MilkingRosterResult & { name: string }>>([]);
 
   useEffect(() => {
     const id = getCompanyId();
-    if (id) setCompanyId(id);
+    if (id) {
+      setCompanyId(id);
+      getCurrentMilkingRosters(id)
+        .then(setCurrent)
+        .catch(() => {});
+    }
     getEmployees()
       .then(setEmployees)
       .catch(() => {});
@@ -154,6 +191,11 @@ export default function MilkingRoutinePage() {
         }),
       });
       setResult(plan);
+      if (plan.created) {
+        getCurrentMilkingRosters(companyId)
+          .then(setCurrent)
+          .catch(() => {});
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -170,13 +212,25 @@ export default function MilkingRoutinePage() {
         subtitle="Arma la rutina de las dos semanas según el puesto de cada persona y avisa si algún día queda sin cubrir."
       />
 
+      {current.map((roster) => (
+        <Card key={`${roster.name}-${roster.anchorDate}`} className={`p-6 ${WIDE_CARD}`}>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div className="text-sm font-semibold text-ink">Rutina en curso: {roster.name}</div>
+            <div className="text-xs text-ink-muted">
+              La semana A empezó el {weekdayAt(roster.anchorDate, 0).toLowerCase()} {shortDateAt(roster.anchorDate, 0)} y se repite cada 14 días.
+            </div>
+          </div>
+          <RosterSheet result={roster} />
+        </Card>
+      ))}
+
       <Card className="p-6">
         <div className="flex items-start gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
             <Milk size={20} />
           </div>
           <div>
-            <div className="text-sm font-semibold text-ink">Cómo funciona</div>
+            <div className="text-sm font-semibold text-ink">{current.length > 0 ? 'Armar una rutina nueva' : 'Cómo funciona'}</div>
             <div className="text-xs text-ink-muted">
               Cada ordeño necesita cada día 2 ordeñadores de jornada completa y 1 vaquero. Todos tienen el mismo ciclo de 14 días:
               una semana con media jornada (4 h) y un descanso, y la siguiente con dos descansos. Eso da 44 h una semana y 40 h la
@@ -411,18 +465,23 @@ export default function MilkingRoutinePage() {
           </div>
         )}
 
-        {result && <RosterResult result={result} />}
       </Card>
+
+      {result && (
+        <Card className={`p-6 ${WIDE_CARD}`}>
+          <RosterResult result={result} name={name} />
+        </Card>
+      )}
     </div>
   );
 }
 
-function RosterResult({ result }: { result: MilkingRosterResult }) {
-  const weeks = [0, 1].map((week) => result.days.slice(week * 7, week * 7 + 7));
-  const cellOf = (dayOffset: number, userId: string) => result.days[dayOffset].cells.find((c) => c.userId === userId)!;
-
+function RosterResult({ result, name }: { result: MilkingRosterResult; name: string }) {
   return (
-    <div className="mt-6 border-t border-line-hair pt-5">
+    <div>
+      <div className="mb-3 text-sm font-semibold text-ink">
+        {result.created ? 'Rutina creada' : 'Así quedaría'}: {name}
+      </div>
       {result.feasible ? (
         <div className="flex items-start gap-2 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900">
           <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600" />
@@ -471,94 +530,7 @@ function RosterResult({ result }: { result: MilkingRosterResult }) {
         </ul>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2 text-xs text-ink">
-        {Array.from({ length: result.stationsCount }, (_, s) => (
-          <span key={s} className={`rounded-full px-3 py-1 font-medium ${STATION_TINTS[s % STATION_TINTS.length]}`}>
-            Ordeño / Vaquería {s + 1}
-          </span>
-        ))}
-        <span className={`rounded-full px-3 py-1 font-medium ${SHORT_DAY_TINT}`}>Media jornada (4 h)</span>
-        <span className="rounded-full bg-surface-page px-3 py-1 font-medium text-ink-muted">Descanso</span>
-        <span className="rounded-full px-3 py-1 font-medium ring-1 ring-inset ring-ink-muted">Borde = cubre un puesto que no es el suyo</span>
-      </div>
-
-      {weeks.map((days, week) => (
-        <div key={week} className="mt-5">
-          <div className="text-sm font-semibold text-ink">Semana {week === 0 ? 'A' : 'B'}</div>
-          <div className="mt-1 overflow-x-auto rounded-lg border border-line-hair">
-            <table className="min-w-full text-sm tabular-nums">
-              <thead className="bg-surface-page text-xs text-ink-secondary">
-                <tr>
-                  <th className="px-3 py-2 text-left font-semibold">Persona</th>
-                  {days.map((day) => (
-                    <th key={day.dayOffset} className="whitespace-nowrap px-2 py-2 text-center font-semibold">
-                      {weekdayAt(result.anchorDate, day.dayOffset)}
-                      <div className="font-normal text-ink-muted">{shortDateAt(result.anchorDate, day.dayOffset)}</div>
-                    </th>
-                  ))}
-                  <th className="px-3 py-2 text-right font-semibold">Horas</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line-hair">
-                {result.workers.map((worker) => (
-                  <tr key={worker.userId}>
-                    <td className="whitespace-nowrap px-3 py-2">
-                      <div className="font-medium text-ink">{worker.fullName}</div>
-                      <div className="text-xs text-ink-muted">
-                        {ROLE_LABEL[worker.role]}
-                        {worker.homeStation !== null && ` · ${worker.role === 'VAQUERO' ? 'Vaquería' : 'Ordeño'} ${worker.homeStation + 1}`}
-                      </div>
-                    </td>
-                    {days.map((day) => {
-                      const cell = cellOf(day.dayOffset, worker.userId);
-                      const tint =
-                        cell.kind === 'DESCANSO' || cell.station === null
-                          ? 'bg-surface-page text-ink-muted'
-                          : cell.kind === 'CORTO'
-                            ? `${SHORT_DAY_TINT} text-ink`
-                            : `${STATION_TINTS[cell.station % STATION_TINTS.length]} text-ink`;
-                      return (
-                        <td key={day.dayOffset} className="px-1 py-1 text-center">
-                          <span
-                            className={`inline-block w-full whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium ${tint} ${cell.isCover ? 'ring-1 ring-inset ring-ink-muted' : ''}`}
-                            title={cell.isCover ? 'Ese día cubre un puesto que no es el suyo' : undefined}
-                          >
-                            {cellText(cell)}
-                          </span>
-                        </td>
-                      );
-                    })}
-                    <td className="px-3 py-2 text-right font-medium text-ink">
-                      {days.reduce((sum, day) => sum + cellHours(cellOf(day.dayOffset, worker.userId)), 0)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot className="bg-surface-page text-xs text-ink-secondary">
-                {Array.from({ length: result.stationsCount }, (_, s) => (
-                  <tr key={s}>
-                    <td className="whitespace-nowrap px-3 py-1.5 font-medium">Ordeño {s + 1}: ordeñadores + vaquero</td>
-                    {days.map((day) => {
-                      const full = day.cells.filter((c) => c.kind === 'COMPLETO' && c.post === 'ORDENO' && c.station === s).length;
-                      const half = day.cells.filter((c) => c.kind === 'CORTO' && c.station === s).length;
-                      const vaquero = day.cells.filter((c) => c.kind === 'COMPLETO' && c.post === 'VAQUERIA' && c.station === s).length;
-                      const short = full < 2 || vaquero < 1;
-                      return (
-                        <td key={day.dayOffset} className={`px-1 py-1.5 text-center ${short ? 'font-semibold text-red-700' : ''}`}>
-                          {full}
-                          {half > 0 && ` +${half}½`} + {vaquero}
-                          {short && ' ⚠'}
-                        </td>
-                      );
-                    })}
-                    <td />
-                  </tr>
-                ))}
-              </tfoot>
-            </table>
-          </div>
-        </div>
-      ))}
+      <RosterSheet result={result} />
 
       {result.workers.some((w) => w.chosenBySystem) && (
         <p className="mt-3 text-xs text-ink-muted">
@@ -570,6 +542,83 @@ function RosterResult({ result }: { result: MilkingRosterResult }) {
           .
         </p>
       )}
+    </div>
+  );
+}
+
+/** La planilla de las dos semanas, con el mismo aspecto de la hoja de la finca: Semana A y Semana B lado a lado. */
+function RosterSheet({ result }: { result: MilkingRosterResult }) {
+  const workers = sheetOrder(result.workers);
+  const weeks = [0, 1].map((week) => result.days.slice(week * 7, week * 7 + 7));
+  const cellOf = (dayOffset: number, userId: string) => result.days[dayOffset].cells.find((c) => c.userId === userId)!;
+  const headClass = 'border border-neutral-500 bg-white px-0.5 py-2 text-center font-bold uppercase';
+  const cellClass = 'border border-neutral-500 px-0.5 py-2 text-center';
+
+  return (
+    <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-6 min-[1500px]:grid-cols-2">
+      {weeks.map((days, week) => {
+        const hours = workers.map((w) => days.reduce((sum, day) => sum + cellHours(cellOf(day.dayOffset, w.userId)), 0));
+        const sameHours = hours.every((h) => h === hours[0]);
+        return (
+          <div key={week}>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] table-fixed border-collapse border-2 border-neutral-900 text-[10px] leading-tight tracking-tight text-neutral-900 tabular-nums min-[1700px]:text-[11px] min-[1700px]:tracking-normal">
+                <colgroup>
+                  <col style={{ width: '11%' }} />
+                  <col style={{ width: '15%' }} />
+                  {days.map((day) => (
+                    <col key={day.dayOffset} />
+                  ))}
+                </colgroup>
+                <thead>
+                  <tr className="border-b-2 border-neutral-900">
+                    <th className={headClass}>Ubicación</th>
+                    <th className={headClass}>Nombre</th>
+                    {days.map((day) => (
+                      <th key={day.dayOffset} className={headClass} title={shortDateAt(result.anchorDate, day.dayOffset)}>
+                        {weekdayAt(result.anchorDate, day.dayOffset)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {workers.map((worker) => (
+                    <tr key={worker.userId}>
+                      <td className="border border-neutral-500 bg-white px-1.5 py-1.5 text-left font-bold">
+                        {locationLabel(worker, result.stationsCount)}
+                      </td>
+                      <td className={`${cellClass} bg-white uppercase`}>{worker.fullName}</td>
+                      {days.map((day) => {
+                        const cell = cellOf(day.dayOffset, worker.userId);
+                        const resting = cell.kind === 'DESCANSO' || cell.station === null;
+                        const background = resting
+                          ? '#ffffff'
+                          : cell.kind === 'CORTO'
+                            ? SHORT_DAY_COLOR
+                            : STATION_COLORS[(cell.station ?? 0) % STATION_COLORS.length];
+                        return (
+                          <td
+                            key={day.dayOffset}
+                            className={`${cellClass} whitespace-nowrap ${resting || cell.kind === 'CORTO' ? 'font-bold' : 'font-medium'}`}
+                            style={{ backgroundColor: background }}
+                          >
+                            {sheetCellText(worker, cell, result.stationsCount)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-2 text-center text-base font-medium tracking-wide text-ink">SEMANA {week === 0 ? 'A' : 'B'}</div>
+            <div className="text-center text-xs text-ink-muted">
+              {shortDateAt(result.anchorDate, week * 7)} al {shortDateAt(result.anchorDate, week * 7 + 6)}
+              {sameHours && ` · ${hours[0]} h por persona`}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
