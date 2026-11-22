@@ -465,7 +465,12 @@ export class NoveltiesService {
 
     // Rutinas por ciclo (ej. ordeño: 44 h una semana y 40 h la otra): el tope
     // semanal se mide como promedio del ciclo, no semana por semana.
-    const weeklyCapHours = await this.getWeeklyOrdinaryCapHours(userId, date, Number(payrollConfig.maxWeeklyHours));
+    const weeklyCapHours = await this.getWeeklyOrdinaryCapHours(
+      userId,
+      date,
+      Number(payrollConfig.maxWeeklyHours),
+      Number(payrollConfig.maxDailyOrdinaryHours),
+    );
 
     return calculateDailyNovelties({
       userId,
@@ -485,14 +490,23 @@ export class NoveltiesService {
    *
    * Normalmente es el tope legal (`legalMaxWeeklyHours`, 42 h). Pero quien
    * trabaja con una rutina por ciclo de semanas completas (ej. ordeño, ciclo
-   * de 14 dias: una semana de 44 h y la siguiente de 40 h) cumple el tope en
-   * PROMEDIO: 84 h en dos semanas = 42 h semanales. Para esas personas, si
-   * el promedio programado del ciclo no pasa del tope legal, la semana larga
-   * admite sus horas programadas como ordinarias (44), en vez de convertir
-   * las 2 ultimas en hora extra. Lo que se trabaje por fuera del turno
-   * programado sigue siendo extra, como siempre.
+   * de 14 dias: una semana larga y la siguiente corta) cumple el tope en
+   * PROMEDIO del ciclo: 84 h ordinarias en dos semanas = 42 h semanales. Para
+   * esas personas la semana larga admite mas de 42 h ordinarias, hasta lo que
+   * deje libre la semana corta (44 si la otra es de 40), en vez de convertir
+   * sus ultimas horas en extra.
+   *
+   * Las horas ordinarias programadas de cada dia se cuentan ya recortadas al
+   * tope diario (`dailyMaxOrdinaryHours`, 8 h): lo que el turno tenga por
+   * encima de eso es hora extra del dia y no gasta cupo semanal. Lo que se
+   * trabaje por fuera del turno programado sigue siendo extra, como siempre.
    */
-  private async getWeeklyOrdinaryCapHours(userId: string, date: Date, legalMaxWeeklyHours: number): Promise<number> {
+  private async getWeeklyOrdinaryCapHours(
+    userId: string,
+    date: Date,
+    legalMaxWeeklyHours: number,
+    dailyMaxOrdinaryHours: number,
+  ): Promise<number> {
     const assignment = await this.prisma.userShiftPatternAssignment.findFirst({
       where: { userId, validFrom: { lte: date }, OR: [{ validTo: null }, { validTo: { gte: date } }] },
       orderBy: { validFrom: 'desc' },
@@ -503,30 +517,32 @@ export class NoveltiesService {
     const cycleLength = assignment.pattern.cycleLengthDays;
     if (cycleLength < 14 || cycleLength % 7 !== 0) return legalMaxWeeklyHours;
 
-    const plannedHoursByOffset = new Map<number, number>();
+    const ordinaryHoursByOffset = new Map<number, number>();
     for (const day of assignment.pattern.days) {
       if (day.isRestDay || !day.startTime || !day.endTime) continue;
       let minutes = (day.endTime.getTime() - day.startTime.getTime()) / 60_000;
       if (minutes <= 0) minutes += 24 * 60; // turno que cruza la medianoche
-      plannedHoursByOffset.set(day.dayOffset, Math.max(0, minutes - day.lunchMinutes) / 60);
+      ordinaryHoursByOffset.set(day.dayOffset, Math.min(dailyMaxOrdinaryHours, Math.max(0, minutes - day.lunchMinutes) / 60));
     }
 
     // Semanas completas del ciclo, contadas desde el lunes de la semana de
     // `date`. Como la rutina se repite, cualquier ventana de `cycleLength`
     // dias contiene exactamente un ciclo.
     const monday = addDays(startOfLocalDay(date), -((date.getDay() + 6) % 7));
-    let cycleHours = 0;
+    const weeksInCycle = cycleLength / 7;
     let thisWeekHours = 0;
+    let otherWeeksHours = 0;
     for (let i = 0; i < cycleLength; i++) {
       const offset = (((daysBetween(assignment.anchorDate, addDays(monday, i)) % cycleLength) + cycleLength) % cycleLength);
-      const hours = plannedHoursByOffset.get(offset) ?? 0;
-      cycleHours += hours;
+      const hours = ordinaryHoursByOffset.get(offset) ?? 0;
       if (i < 7) thisWeekHours += hours;
+      else otherWeeksHours += hours;
     }
 
-    const averageWeeklyHours = cycleHours / (cycleLength / 7);
-    if (averageWeeklyHours > legalMaxWeeklyHours + 0.001) return legalMaxWeeklyHours;
-    return Math.max(legalMaxWeeklyHours, thisWeekHours);
+    // Lo que el promedio del ciclo deja libre para esta semana, sin pasar de
+    // lo que esta semana tiene programado; nunca menos que el tope legal.
+    const leftByOtherWeeks = legalMaxWeeklyHours * weeksInCycle - otherWeeksHours;
+    return Math.max(legalMaxWeeklyHours, Math.min(thisWeekHours, leftByOtherWeeks));
   }
 
   /** Suma en minutos, para la semana ISO en curso (antes de `date`), el campo indicado del resultado diario. */

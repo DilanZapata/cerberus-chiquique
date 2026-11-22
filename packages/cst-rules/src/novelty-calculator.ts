@@ -134,17 +134,22 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
   const weeklyCapMinutes = Number(payrollConfig.maxWeeklyHours) * 60;
   const remainingWeeklyMinutes = Math.max(0, weeklyCapMinutes - input.weekOrdinaryMinutesAccumulated);
 
-  // Si hay horario programado, la hora extra se cuenta contra la hora de
-  // SALIDA programada (plannedShift.end), no contra una bolsa de minutos que
-  // arranca a contar desde la entrada real: llegar tarde no debe retrasar
-  // (ni reducir) cuanta hora extra se detecta al final del turno. Sin
-  // horario (ej. sin cargo/rutina asignada) no hay una hora de salida contra
-  // que comparar, asi que se usa el tope legal diario de siempre como respaldo.
+  // La jornada ordinaria de un dia nunca pasa del tope diario legal
+  // (`maxDailyOrdinaryHours`, 8 h), TENGA O NO horario programado: si el turno
+  // programado es mas largo (ej. ordeño de 3:00 a 9:00 y de 14:00 a 18:00 = 10
+  // h, o un vigilante de 12 h), las primeras 8 h son ordinarias y el resto es
+  // hora extra de ESE dia -- antes, con horario, las 10 h contaban como
+  // ordinarias y la extra se amontonaba toda al final de la semana, cuando
+  // se agotaba el tope semanal (y caia como extra dominical).
+  // Ademas, si hay horario programado, la hora extra se cuenta contra la hora
+  // de SALIDA programada (plannedShift.end, ver mas abajo), no contra una
+  // bolsa de minutos que arranca desde la entrada real: llegar tarde no debe
+  // retrasar (ni reducir) cuanta hora extra se detecta al final del turno.
   // Si el dia es de descanso segun el horario (isScheduledRestDay) y aun asi
   // se trabajo, el cupo ordinario de ese dia es 0: nada de lo trabajado cae
   // dentro de su jornada ordinaria, asi que todo es hora extra.
   const dailyCapMinutes = input.isScheduledRestDay ? 0 : Number(payrollConfig.maxDailyOrdinaryHours) * 60;
-  let remainingCapForDay = plannedShift ? remainingWeeklyMinutes : Math.min(dailyCapMinutes, remainingWeeklyMinutes);
+  let remainingCapForDay = Math.min(dailyCapMinutes, remainingWeeklyMinutes);
 
   const buckets = emptyBuckets();
   // Lo trabajado ANTES de la hora de entrada programada va aparte: es hora
