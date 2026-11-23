@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { RootStackParamList } from './types';
@@ -12,6 +13,7 @@ import EmployeesListScreen from '../screens/admin/EmployeesListScreen';
 import EmployeeFormScreen from '../screens/admin/EmployeeFormScreen';
 import FaceEnrollScreen from '../screens/admin/FaceEnrollScreen';
 import EmployeeHistoryScreen from '../screens/admin/EmployeeHistoryScreen';
+import AssistantFab from '../components/AssistantFab';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -30,6 +32,7 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
  */
 export default function RootNavigator() {
   const { session, loading } = useAuth();
+  const [routeName, setRouteName] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -41,7 +44,16 @@ export default function RootNavigator() {
 
   if (IS_MANAGERS) {
     return (
-      <Stack.Navigator>
+      <View style={{ flex: 1 }}>
+        <Stack.Navigator
+          // Para saber en que pantalla esta la persona (ver el boton del asistente mas abajo).
+          screenListeners={{
+            state: (event) => {
+              const state = (event.data as { state?: { index: number; routes: Array<{ name: string }> } }).state;
+              if (state) setRouteName(state.routes[state.index]?.name ?? null);
+            },
+          }}
+        >
         {!session ? (
           <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
         ) : (
@@ -63,7 +75,10 @@ export default function RootNavigator() {
             />
           </>
         )}
-      </Stack.Navigator>
+        </Stack.Navigator>
+        {/* Boton flotante del asistente: en todas las pantallas con sesion, menos donde estorba a la camara. */}
+        {session && routeName !== 'AdminFaceEnroll' && <AssistantFab />}
+      </View>
     );
   }
 

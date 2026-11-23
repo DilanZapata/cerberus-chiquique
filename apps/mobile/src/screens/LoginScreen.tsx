@@ -9,17 +9,23 @@ import { APP_NAME, IS_MANAGERS } from '../config/variant';
  * valida AuthContext con el rol que devuelve el backend).
  */
 export default function LoginScreen() {
-  const { login } = useAuth();
+  const { login, loginWithPin } = useAuth();
+  // Managers entra con cedula + PIN (el mismo PIN del kiosco). El correo queda como alternativa.
+  const [mode, setMode] = useState<'pin' | 'email'>(IS_MANAGERS ? 'pin' : 'email');
+  const [nationalId, setNationalId] = useState('');
+  const [pin, setPin] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const ready = mode === 'pin' ? nationalId.trim().length >= 4 && pin.length >= 4 : Boolean(email && password);
 
   async function handleLogin() {
     setLoading(true);
     setError(null);
     try {
-      await login(email.trim(), password);
+      if (mode === 'pin') await loginWithPin(nationalId.trim(), pin);
+      else await login(email.trim(), password);
       // La navegacion cambia sola: RootNavigator reacciona al cambio de sesion.
     } catch (err) {
       setError((err as Error).message);
@@ -36,35 +42,71 @@ export default function LoginScreen() {
       <Text style={styles.title}>Iniciar sesion</Text>
       <Text style={styles.subtitle}>
         {IS_MANAGERS
-          ? 'Para administradores, RRHH y supervisores: autoriza horas extra y gestiona al personal.'
+          ? mode === 'pin'
+            ? 'Para administradores, RRHH y supervisores. Entra con tu cedula y el mismo PIN que usas en el kiosco.'
+            : 'Para administradores, RRHH y supervisores: autoriza horas extra y gestiona al personal.'
           : 'Ingresa con tu correo para marcar tu asistencia y ver tu historial.'}
       </Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Correo"
-        placeholderTextColor="#94a3b8"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="email-address"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Contrasena"
-        placeholderTextColor="#94a3b8"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
+      {mode === 'pin' ? (
+        <>
+          <TextInput
+            style={styles.input}
+            placeholder="Cedula"
+            placeholderTextColor="#94a3b8"
+            value={nationalId}
+            onChangeText={setNationalId}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="number-pad"
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="PIN"
+            placeholderTextColor="#94a3b8"
+            value={pin}
+            onChangeText={(text) => setPin(text.replace(/[^0-9]/g, ''))}
+            keyboardType="number-pad"
+            maxLength={8}
+            secureTextEntry
+          />
+        </>
+      ) : (
+        <>
+          <TextInput
+            style={styles.input}
+            placeholder="Correo"
+            placeholderTextColor="#94a3b8"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Contrasena"
+            placeholderTextColor="#94a3b8"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+          />
+        </>
+      )}
       {error && <Text style={styles.error}>{error}</Text>}
-      <TouchableOpacity
-        style={[styles.button, (loading || !email || !password) && styles.buttonDisabled]}
-        onPress={handleLogin}
-        disabled={loading || !email || !password}
-      >
+      <TouchableOpacity style={[styles.button, (loading || !ready) && styles.buttonDisabled]} onPress={handleLogin} disabled={loading || !ready}>
         {loading ? <ActivityIndicator color="white" /> : <Text style={styles.buttonText}>Ingresar</Text>}
       </TouchableOpacity>
+      {IS_MANAGERS && (
+        <TouchableOpacity
+          onPress={() => {
+            setError(null);
+            setMode(mode === 'pin' ? 'email' : 'pin');
+          }}
+          hitSlop={10}
+        >
+          <Text style={styles.switchText}>{mode === 'pin' ? 'Entrar con correo y contrasena' : 'Entrar con cedula y PIN'}</Text>
+        </TouchableOpacity>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -92,4 +134,5 @@ const styles = StyleSheet.create({
   button: { backgroundColor: '#0f172a', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 8, marginTop: 8, minWidth: 180, alignItems: 'center' },
   buttonDisabled: { opacity: 0.5 },
   buttonText: { color: 'white', fontWeight: '700', fontSize: 16 },
+  switchText: { color: '#475569', fontSize: 13, marginTop: 10, textDecorationLine: 'underline' },
 });

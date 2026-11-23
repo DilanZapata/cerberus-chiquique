@@ -16,6 +16,9 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_SECURITY: ${SMTP_SECURITY:-TLS}
       MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD}
+      # Asistente (chat) de Cerberus Managers: llave y modelo de OpenAI. Sin la llave, el chat avisa que no esta configurado.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
     volumes:
       - cerberus_uploads:/repo/apps/api/uploads
     expose:

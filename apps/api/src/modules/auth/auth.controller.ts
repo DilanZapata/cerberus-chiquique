@@ -1,6 +1,7 @@
 import { Body, Controller, Post } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { LoginPinDto } from './dto/login-pin.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Public } from '../../common/decorators/public.decorator';
@@ -13,6 +14,13 @@ export class AuthController {
   @Post('login')
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto.email, dto.password);
+  }
+
+  /** Ingreso con cedula + PIN (app Cerberus Managers; solo jefatura). */
+  @Public()
+  @Post('login-pin')
+  loginWithPin(@Body() dto: LoginPinDto) {
+    return this.authService.loginWithPin(dto.nationalId, dto.pin);
   }
 
   /** Paso 1: solicita el codigo, se envia por correo. */

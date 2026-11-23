@@ -19,6 +19,7 @@ import { CompaniesModule } from './modules/companies/companies.module';
 import { UsersModule } from './modules/users/users.module';
 import { FaceRecognitionModule } from './modules/face-recognition/face-recognition.module';
 import { MasterModule } from './modules/master/master.module';
+import { AssistantModule } from './modules/assistant/assistant.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -43,6 +44,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     UsersModule,
     FaceRecognitionModule,
     MasterModule,
+    AssistantModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

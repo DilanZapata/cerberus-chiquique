@@ -121,7 +121,7 @@ export default function AdminDashboardScreen({ navigation }: Props) {
           data={rows}
           keyExtractor={(item) => item.user.id}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
-          contentContainerStyle={[styles.list, { paddingBottom: 24 + insets.bottom }]}
+          contentContainerStyle={[styles.list, { paddingBottom: 96 + insets.bottom }]}
           ListEmptyComponent={<Text style={styles.empty}>Sin empleados para mostrar.</Text>}
           renderItem={({ item }) => (
             <View style={styles.row}>

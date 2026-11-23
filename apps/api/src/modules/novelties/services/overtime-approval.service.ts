@@ -283,6 +283,44 @@ export class OvertimeApprovalService {
     };
   }
 
+  /**
+   * Horas extra de UNA persona, dia por dia, en un rango: trabajadas,
+   * autorizadas, pendientes y rechazadas, con el motivo de la autorizacion.
+   * Solo trae los dias que tienen horas extra o una autorizacion. Es de
+   * consulta (no exige poder autorizar): la usa el asistente de la app.
+   */
+  async listEmployeeOvertime(companyId: string, userId: string, from: string, to: string) {
+    const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v ?? '') && !Number.isNaN(Date.parse(`${v}T00:00:00`));
+    if (!isDate(from) || !isDate(to)) throw new BadRequestException('"from" y "to" deben ser fechas validas (YYYY-MM-DD).');
+    const fromDate = new Date(`${from}T00:00:00`);
+    const toDate = new Date(`${to}T00:00:00`);
+    if (toDate < fromDate || (toDate.getTime() - fromDate.getTime()) / 86_400_000 > MAX_RANGE_DAYS) {
+      throw new BadRequestException(`El rango debe ser valido y de maximo ${MAX_RANGE_DAYS} dias.`);
+    }
+    const employee = await this.prisma.user.findFirst({ where: { id: userId, companyId }, select: { id: true } });
+    if (!employee) throw new NotFoundException('Empleado no encontrado en tu empresa.');
+
+    const [novelties, authorizations] = await Promise.all([
+      this.prisma.novelty.findMany({
+        where: { userId, workDate: { gte: fromDate, lte: toDate }, code: { in: OVERTIME_DETAIL_CODES } },
+        select: { workDate: true },
+        distinct: ['workDate'],
+      }),
+      this.prisma.overtimeAuthorization.findMany({ where: { userId, workDate: { gte: fromDate, lte: toDate } }, select: { workDate: true } }),
+    ]);
+    const days = [...new Set([...novelties, ...authorizations].map((row) => dateKey(row.workDate)))].sort();
+    const rows = [];
+    for (const day of days) rows.push(await this.describe(userId, new Date(`${day}T00:00:00`)));
+    return rows;
+  }
+
+  /** Estado de las horas extra de una persona en un dia puntual (para armar una propuesta de autorizacion). */
+  async describeDay(companyId: string, userId: string, workDate: string) {
+    const employee = await this.prisma.user.findFirst({ where: { id: userId, companyId }, select: { id: true } });
+    if (!employee) throw new NotFoundException('Empleado no encontrado en tu empresa.');
+    return this.describe(userId, new Date(`${workDate.slice(0, 10)}T00:00:00`));
+  }
+
   /** Autorizaciones dadas en un rango de fechas, con lo que realmente se trabajo cada dia. */
   async listAuthorizations(actor: AuthenticatedUser, from: string, to: string) {
     await this.assertCanApprove(actor);

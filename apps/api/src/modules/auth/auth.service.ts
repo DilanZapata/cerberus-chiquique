@@ -10,6 +10,14 @@ import { MailerService } from '../notifications/mailer.service';
 const RESET_CODE_TTL_MINUTES = 15;
 const RESET_CODE_MAX_ATTEMPTS = 5;
 
+// Ingreso con cedula + PIN (app Cerberus Managers). Un PIN es corto, asi que
+// tras varios intentos fallidos seguidos esa cedula queda bloqueada un rato:
+// sin esto se podria adivinar probando los 10.000 PIN de 4 digitos.
+const PIN_LOGIN_MAX_ATTEMPTS = 5;
+const PIN_LOGIN_LOCK_MINUTES = 15;
+// Solo estos roles entran con PIN: es la puerta de la app de jefes.
+const PIN_LOGIN_ROLES = ['ADMIN', 'HR', 'SUPERVISOR'];
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -38,6 +46,57 @@ export class AuthService {
       employeeCode: user.employeeCode,
     };
 
+    return {
+      accessToken: await this.jwtService.signAsync(payload),
+      user: {
+        id: user.id,
+        companyId: user.companyId,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        employeeCode: user.employeeCode,
+      },
+    };
+  }
+
+  /** Intentos fallidos de ingreso con PIN por cedula (en memoria: se limpia al reiniciar el servidor). */
+  private readonly pinAttempts = new Map<string, { failures: number; lockedUntil: number }>();
+
+  /**
+   * Ingreso con cedula + PIN, para la app Cerberus Managers. Usa el mismo PIN
+   * que la persona ya tiene para el kiosco. Solo roles de jefatura
+   * (ADMIN / RRHH / SUPERVISOR). El mensaje de error es siempre el mismo,
+   * exista o no esa cedula, para no revelar quien tiene cuenta.
+   */
+  async loginWithPin(nationalId: string, pin: string) {
+    const key = nationalId.trim();
+    const now = Date.now();
+    const attempts = this.pinAttempts.get(key);
+    if (attempts && attempts.lockedUntil > now) {
+      const minutes = Math.ceil((attempts.lockedUntil - now) / 60_000);
+      throw new UnauthorizedException(`Demasiados intentos. Espera ${minutes} min e intenta de nuevo.`);
+    }
+
+    const candidates = await this.prisma.user.findMany({
+      where: { nationalId: key, isActive: true, pinHash: { not: null }, role: { in: PIN_LOGIN_ROLES as never[] } },
+    });
+    let user: (typeof candidates)[number] | undefined;
+    for (const candidate of candidates) {
+      if (await bcrypt.compare(pin, candidate.pinHash!)) {
+        user = candidate;
+        break;
+      }
+    }
+
+    if (!user) {
+      const failures = (attempts && attempts.lockedUntil <= now ? attempts.failures : 0) + 1;
+      const locked = failures >= PIN_LOGIN_MAX_ATTEMPTS;
+      this.pinAttempts.set(key, { failures: locked ? 0 : failures, lockedUntil: locked ? now + PIN_LOGIN_LOCK_MINUTES * 60_000 : 0 });
+      throw new UnauthorizedException('Cedula o PIN incorrectos, o tu usuario no tiene acceso a esta app.');
+    }
+    this.pinAttempts.delete(key);
+
+    const payload = { sub: user.id, companyId: user.companyId, role: user.role, employeeCode: user.employeeCode };
     return {
       accessToken: await this.jwtService.signAsync(payload),
       user: {

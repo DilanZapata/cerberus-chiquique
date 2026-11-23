@@ -149,6 +149,70 @@ export async function login(email: string, password: string): Promise<LoginResul
   return handle(res);
 }
 
+/** Ingreso con cedula + PIN (Cerberus Managers). */
+export async function loginWithPin(nationalId: string, pin: string): Promise<LoginResult> {
+  const res = await fetchWithTimeout(
+    `${API_URL}/auth/login-pin`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nationalId, pin }) },
+    KIOSK_REQUEST_TIMEOUT_MS,
+  );
+  return handle(res);
+}
+
+// ---- Asistente (chat) de Cerberus Managers ----
+
+export interface AssistantChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/** Autorizacion de horas extra que el asistente dejo lista: no queda hecha hasta confirmarla. */
+export interface AssistantProposal {
+  token: string;
+  expiresAt: string;
+  employee: { id: string; fullName: string; employeeCode: string };
+  days: Array<{
+    date: string;
+    hours: number;
+    mode: 'PENDIENTES' | 'TOTAL';
+    reason: string;
+    workedHours: number;
+    currentAuthorizedHours: number;
+    pendingHours: number;
+    resultingAuthorizedHours: number;
+  }>;
+}
+
+export interface AssistantReply {
+  reply: string;
+  pendingAction: AssistantProposal | null;
+}
+
+// El asistente consulta datos y habla con el modelo: puede tardar bastante mas que una llamada normal.
+const ASSISTANT_TIMEOUT_MS = 70000;
+
+async function assistantRequest(token: string, path: string, body: unknown) {
+  const res = await fetchWithTimeout(
+    `${API_URL}${path}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) },
+    ASSISTANT_TIMEOUT_MS,
+  );
+  return handle(res);
+}
+
+/** Envia la conversacion al asistente y devuelve su respuesta (y, si aplica, una autorizacion por confirmar). */
+export function assistantChat(token: string, messages: AssistantChatMessage[]): Promise<AssistantReply> {
+  return assistantRequest(token, '/assistant/chat', { messages });
+}
+
+/** Confirma (ejecuta) la autorizacion de horas extra que el asistente dejo propuesta. */
+export function assistantConfirm(
+  token: string,
+  proposalToken: string,
+): Promise<{ message: string; employee: string; days: Array<{ date: string; authorizedHours: number; pendingHours: number; reason: string }> }> {
+  return assistantRequest(token, '/assistant/confirm', { token: proposalToken });
+}
+
 export interface MobileClockResult {
   logType: 'CHECK_IN' | 'LUNCH_OUT' | 'LUNCH_IN' | 'CHECK_OUT';
   loggedAt: string;

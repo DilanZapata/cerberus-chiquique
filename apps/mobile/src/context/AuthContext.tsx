@@ -1,12 +1,14 @@
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 import { clearSession, isAdminRole, loadSession, saveSession, Session } from '../services/auth';
-import { login as loginRequest } from '../services/api';
+import { login as loginRequest, loginWithPin as loginWithPinRequest, LoginResult } from '../services/api';
 import { IS_MANAGERS } from '../config/variant';
 
 interface AuthContextValue {
   session: Session | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  /** Ingreso con cedula + PIN (Cerberus Managers). */
+  loginWithPin: (nationalId: string, pin: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -23,8 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  async function login(email: string, password: string) {
-    const result = await loginRequest(email, password);
+  async function startSession(result: LoginResult) {
     if (IS_MANAGERS && !isAdminRole(result.user.role)) {
       // No se guarda la sesion: Managers es solo para quienes administran.
       throw new Error(
@@ -35,12 +36,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession({ accessToken: result.accessToken, user: result.user });
   }
 
+  async function login(email: string, password: string) {
+    await startSession(await loginRequest(email, password));
+  }
+
+  async function loginWithPin(nationalId: string, pin: string) {
+    await startSession(await loginWithPinRequest(nationalId, pin));
+  }
+
   async function logout() {
     await clearSession();
     setSession(null);
   }
 
-  return <AuthContext.Provider value={{ session, loading, login, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ session, loading, login, loginWithPin, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {
