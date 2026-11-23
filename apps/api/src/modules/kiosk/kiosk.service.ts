@@ -325,6 +325,9 @@ export class KioskService {
       logType: resolved.nextLogType,
       loggedAt: now,
       reason: resolved.reason,
+      // true = ese dia la pausa es el descanso largo entre dos bloques (turno
+      // de noche partido por dia): la app dice "descanso" en vez de "almuerzo".
+      breakIsRest: Boolean(context.breakIsRest),
     };
   }
 }

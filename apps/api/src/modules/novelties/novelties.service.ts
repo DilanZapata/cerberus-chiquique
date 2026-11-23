@@ -6,7 +6,9 @@ import {
   isColombianHoliday,
   PlannedShiftWindow,
   resolveLunch,
+  subtractAutomaticBreaks,
   round,
+  roundHoursToHalfHourBlocks,
 } from '@cerberus/cst-rules';
 import {
   CalculatedNovelty,
@@ -25,10 +27,11 @@ import {
   NoveltyStatus as PrismaNoveltyStatus,
   ScheduleType,
   TimeLogSource,
+  TimeLogType,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { addDays, combineDateAndTime, daysBetween, startOfLocalDay, timeToHHmm } from '../../common/utils/time.util';
-import { findShiftMarks } from '../../common/utils/shift-marks.util';
+import { findShiftMarks, isDuplicateMarkError } from '../../common/utils/shift-marks.util';
 import { resolveActiveCycleWeek } from '../../common/utils/rotating-schedule.util';
 import { PayrollConfigService } from '../payroll-config/payroll-config.service';
 import { MailerService } from '../notifications/mailer.service';
@@ -96,6 +99,50 @@ export interface ShiftResolution {
    */
   finalExitWindowBeforeMin?: number;
   finalExitGraceMin?: number;
+}
+
+/**
+ * Desde esta fecha (YYYY-MM-DD) los horarios que cruzan la medianoche se
+ * manejan POR DIA CALENDARIO: cada dia lleva sus propios bloques de trabajo
+ * y sus propias marcas (ver `getPlannedShift` y `midnightHandover`). Los dias
+ * anteriores se siguen leyendo con el modelo viejo (un turno que empieza un
+ * dia y termina al siguiente), para que recalcular o consultar un dia ya
+ * pasado de exactamente lo mismo que dio en su momento.
+ */
+const MIDNIGHT_SPLIT_FROM = process.env.MIDNIGHT_SPLIT_FROM ?? '2026-11-23';
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+export function usesMidnightSplit(date: Date): boolean {
+  return localDateKey(date) >= MIDNIGHT_SPLIT_FROM;
+}
+
+/**
+ * El plan de trabajo de UN dia calendario. Para quien tiene horario diurno
+ * es su turno de siempre (un bloque). Para quien tiene un turno que cruza la
+ * medianoche (ej. 22:00 a 06:00) el dia se arma con lo que le toca DENTRO de
+ * ese dia: la cola del turno de anoche (00:00 a 06:00) y la cabeza del turno
+ * de hoy (22:00 a 24:00), con un descanso largo entre los dos.
+ */
+export interface DayPlan extends ShiftResolution {
+  /** Bloques de trabajo del dia, en orden (0, 1 o 2). `plannedShift` va del inicio del primero al fin del ultimo. */
+  blocks: PlannedShiftWindow[];
+  /** Descanso largo entre los dos bloques (ej. 06:00 a 22:00): se marca como "salida a descanso" / "entrada de descanso". */
+  dayBreak?: PlannedShiftWindow;
+  /** true si este dia viene partido por la medianoche (tiene cola de anoche y/o su turno sigue manana). */
+  splitByMidnight: boolean;
+  /** El primer bloque arranca a las 00:00 porque es la continuacion del turno de anoche. */
+  continuesFromYesterday: boolean;
+  /** El ultimo bloque llega hasta la medianoche y el turno sigue al dia siguiente. */
+  continuesAfterMidnight: boolean;
+  /** Comidas del horario que caen dentro de los bloques: no se marcan, se descuentan solas. */
+  mealBreaks: PlannedShiftWindow[];
+  /** Tolerancia (min) del horario para volver del descanso largo. */
+  breakToleranceMinutes: number;
+  /** Rango en que antes se marcaba la comida del turno (ya no se marca): el kiosco rechaza una marca ahi con un mensaje claro. */
+  mealWindows: PlannedShiftWindow[];
 }
 
 /**
@@ -358,17 +405,17 @@ export class NoveltiesService {
    * de novedades nunca cuenten horas distintas.
    */
   async getWorkedSegmentsForDay(userId: string, date: Date, allowsLunchSkip: boolean) {
-    const [marks, lunchPolicy, shiftResolution] = await Promise.all([
+    const shiftResolution = await this.getPlannedShift(userId, date);
+    const [marks, lunchPolicy] = await Promise.all([
       this.getDayMarks(userId, date),
-      this.getLunchPolicy(userId, date, allowsLunchSkip),
-      this.getPlannedShift(userId, date),
+      this.getLunchPolicy(userId, date, allowsLunchSkip, shiftResolution),
     ]);
     // Sin salida final no hay intervalo cerrado que contar: una jornada
     // abierta se muestra con sus marcas pero sin horas (resolveLunch usaria
     // "ahora" como referencia, lo que no aplica a un reporte historico).
     const segments =
       marks.checkIn && marks.checkOut
-        ? resolveLunch(marks, lunchPolicy, undefined, shiftResolution.plannedShift).workedSegments
+        ? subtractAutomaticBreaks(resolveLunch(marks, lunchPolicy, undefined, shiftResolution.plannedShift).workedSegments, shiftResolution.mealBreaks)
         : [];
     return { marks, segments };
   }
@@ -381,11 +428,11 @@ export class NoveltiesService {
     });
     if (!user) throw new NotFoundException(`Usuario ${userId} no encontrado`);
 
-    const [payrollConfig, lunchPolicy, shiftResolution, marks, weekOrdinaryMinutesAccumulated, weekOvertimeMinutesAccumulated] =
+    const shiftResolution = await this.getPlannedShift(userId, date);
+    const [payrollConfig, lunchPolicy, marks, weekOrdinaryMinutesAccumulated, weekOvertimeMinutesAccumulated] =
       await Promise.all([
         this.payrollConfigService.resolveEffective(user.companyId, date),
-        this.getLunchPolicy(userId, date, user.allowsLunchSkip),
-        this.getPlannedShift(userId, date),
+        this.getLunchPolicy(userId, date, user.allowsLunchSkip, shiftResolution),
         this.getDayMarks(userId, date),
         this.getWeekAccumulated(userId, date, 'totalOrdinaryHours'),
         this.getWeekAccumulated(userId, date, 'totalOvertimeHours'),
@@ -440,9 +487,25 @@ export class NoveltiesService {
         // esa cobertura mas arriba, en persistIncidenceCoverage): ausencia
         // injustificada. Antes esto producia exactamente el mismo resultado
         // que un dia de descanso real (cero novedades).
-        const plannedHours = round(
-          (shiftResolution.plannedShift.end.getTime() - shiftResolution.plannedShift.start.getTime()) / 3_600_000,
-        );
+        // Horas programadas del dia: la suma de sus bloques (en un dia
+        // partido, sin contar el descanso largo del medio).
+        let plannedMinutes = shiftResolution.blocks.reduce((sum, block) => sum + (block.end.getTime() - block.start.getTime()), 0) / 60_000;
+        // En un turno corrido, el almuerzo del horario no es tiempo de trabajo:
+        // la ausencia de un dia de 8:00 a 17:00 con 1 h de almuerzo es de 8 h, no de 9.
+        if (!shiftResolution.splitByMidnight && lunchPolicy.defaultLunchMinutes > 0) {
+          const shift = shiftResolution.plannedShift;
+          const [windowHour, windowMinute] = lunchPolicy.windowStart.split(':').map(Number);
+          for (const offset of [0, 1]) {
+            const lunchStart = addDays(startOfLocalDay(shift.start), offset);
+            lunchStart.setHours(windowHour, windowMinute, 0, 0);
+            const lunchEnd = lunchStart.getTime() + lunchPolicy.defaultLunchMinutes * 60_000;
+            if (lunchStart >= shift.start && lunchEnd < shift.end.getTime()) {
+              plannedMinutes -= lunchPolicy.defaultLunchMinutes;
+              break;
+            }
+          }
+        }
+        const plannedHours = roundHoursToHalfHourBlocks(plannedMinutes / 60);
         return {
           userId,
           workDate,
@@ -479,6 +542,8 @@ export class NoveltiesService {
       lunchPolicy,
       payrollConfig: weeklyCapHours === Number(payrollConfig.maxWeeklyHours) ? payrollConfig : { ...payrollConfig, maxWeeklyHours: weeklyCapHours },
       plannedShift: shiftResolution.plannedShift,
+      extraBreaks: shiftResolution.mealBreaks,
+      plannedBlocks: shiftResolution.blocks,
       isScheduledRestDay: shiftResolution.isScheduledRestDay,
       weekOrdinaryMinutesAccumulated,
       weekOvertimeMinutesAccumulated,
@@ -587,7 +652,25 @@ export class NoveltiesService {
    * por dia trae su propio `lunchMinutes` en el schema, pero ese campo no lo
    * consume ningun modulo, ni antes ni despues de esta funcionalidad).
    */
-  private async getLunchPolicy(userId: string, date: Date, allowsLunchSkip: boolean): Promise<LunchPolicy> {
+  private async getLunchPolicy(userId: string, date: Date, allowsLunchSkip: boolean, dayPlan?: DayPlan): Promise<LunchPolicy> {
+    // Dia partido por la medianoche: las marcas de "salida/entrada de
+    // almuerzo" son las del descanso largo entre los dos bloques (ej. sale a
+    // las 06:00 y vuelve a las 22:00). Con un solo bloque ese dia no hay
+    // pausa que marcar. La comida del horario va aparte (DayPlan.mealBreaks).
+    const plan = dayPlan ?? (usesMidnightSplit(date) ? await this.getPlannedShift(userId, date) : undefined);
+    if (plan?.splitByMidnight) {
+      if (plan.dayBreak) {
+        return {
+          defaultLunchMinutes: Math.round((plan.dayBreak.end.getTime() - plan.dayBreak.start.getTime()) / 60_000),
+          windowStart: `${String(plan.dayBreak.start.getHours()).padStart(2, '0')}:${String(plan.dayBreak.start.getMinutes()).padStart(2, '0')}`,
+          windowEnd: `${String(plan.dayBreak.end.getHours()).padStart(2, '0')}:${String(plan.dayBreak.end.getMinutes()).padStart(2, '0')}`,
+          toleranceMinutes: plan.breakToleranceMinutes,
+          allowsLunchSkip: false,
+        };
+      }
+      return { defaultLunchMinutes: 0, windowStart: '00:00', windowEnd: '00:00', toleranceMinutes: 0, allowsLunchSkip: false };
+    }
+
     const resolved = await this.resolveAssignedSchedule(userId, date);
     if (resolved) return this.toLunchPolicy(resolved.schedule, allowsLunchSkip);
 
@@ -736,8 +819,116 @@ export class NoveltiesService {
     return this.prisma.shift.findFirst({ where: { userId, workDate: date } });
   }
 
-  /** Publico: reutilizado por resolveMarkContext y por el cierre automatico de jornadas (jornada-cierre.service.ts). */
-  async getPlannedShift(userId: string, date: Date): Promise<ShiftResolution> {
+  /**
+   * Plan de trabajo del DIA CALENDARIO `date` (ver `DayPlan`). Es lo que usan
+   * el kiosco, la nomina, el cierre automatico y los reportes.
+   *
+   * Horario diurno (o dias anteriores a `MIDNIGHT_SPLIT_FROM`): el turno que
+   * empieza ese dia, tal cual. Horario que cruza la medianoche: la cola del
+   * turno de anoche (desde las 00:00) mas la cabeza del turno de hoy (hasta
+   * las 24:00). Asi cada dia tiene, como mucho, una marca de cada tipo:
+   * entrada (00:00, la pone el sistema), salida a descanso (06:00), entrada
+   * de descanso (22:00) y salida (23:59:59, la pone el sistema).
+   */
+  async getPlannedShift(userId: string, date: Date): Promise<DayPlan> {
+    const dayStart = startOfLocalDay(date);
+    const today = await this.getShiftStartingOn(userId, dayStart);
+    const plain = (): DayPlan => ({
+      ...today,
+      blocks: today.plannedShift ? [today.plannedShift] : [],
+      splitByMidnight: false,
+      continuesFromYesterday: false,
+      continuesAfterMidnight: false,
+      mealBreaks: [],
+      breakToleranceMinutes: 0,
+      mealWindows: [],
+    });
+    if (!usesMidnightSplit(dayStart)) return plain();
+
+    const dayEnd = addDays(dayStart, 1);
+    const yesterdayStart = addDays(dayStart, -1);
+    // La cola de anoche solo existe si AYER ya se manejaba por dia calendario
+    // (si no, ese turno se cuenta completo en el dia en que empezo).
+    const yesterday = usesMidnightSplit(yesterdayStart) ? await this.getShiftStartingOn(userId, yesterdayStart) : null;
+
+    const tailCrosses = Boolean(yesterday?.plannedShift && yesterday.plannedShift.end > dayStart);
+    const headCrosses = Boolean(today.plannedShift && today.plannedShift.end > dayEnd);
+    if (!tailCrosses && !headCrosses) return plain();
+
+    // Comida del horario dentro de un turno nocturno: en un dia partido las
+    // marcas de "almuerzo" ya se usan para el descanso largo, asi que la
+    // comida no se marca. Sin permiso de saltarla se descuenta sola; con
+    // permiso, el turno termina esos minutos antes (sale mas temprano).
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { allowsLunchSkip: true } });
+    const allowsLunchSkip = user?.allowsLunchSkip ?? false;
+    const meals: PlannedShiftWindow[] = [];
+    const mealWindows: PlannedShiftWindow[] = [];
+    let tolerance = 15;
+    const adjustForMeal = async (shift: PlannedShiftWindow, shiftDay: Date): Promise<PlannedShiftWindow> => {
+      const resolved = await this.resolveAssignedSchedule(userId, shiftDay);
+      if (!resolved) return shift;
+      tolerance = Math.max(tolerance, resolved.schedule.lunchToleranceMinutes);
+      const lunchMinutes = resolved.schedule.defaultLunchMinutes;
+      if (lunchMinutes <= 0) return shift;
+      if (allowsLunchSkip) return { start: shift.start, end: new Date(shift.end.getTime() - lunchMinutes * 60_000) };
+      const windowStart = resolved.schedule.lunchWindowStart;
+      for (const offset of [0, 1]) {
+        const mealStart = combineDateAndTime(addDays(shiftDay, offset), windowStart);
+        const mealEnd = new Date(mealStart.getTime() + lunchMinutes * 60_000);
+        if (mealStart >= shift.start && mealEnd <= shift.end) {
+          meals.push({ start: mealStart, end: mealEnd });
+          // Donde la gente solia marcarla: desde que abre la ventana hasta
+          // que termina una comida empezada al final de la ventana.
+          let windowEnd = combineDateAndTime(addDays(shiftDay, offset), resolved.schedule.lunchWindowEnd);
+          if (windowEnd < mealStart) windowEnd = addDays(windowEnd, 1);
+          const slack = resolved.schedule.lunchToleranceMinutes * 60_000;
+          mealWindows.push({ start: new Date(mealStart.getTime() - slack), end: new Date(windowEnd.getTime() + lunchMinutes * 60_000 + slack) });
+          break;
+        }
+      }
+      return shift;
+    };
+
+    const blocks: PlannedShiftWindow[] = [];
+    if (tailCrosses && yesterday?.plannedShift) {
+      const shift = await adjustForMeal(yesterday.plannedShift, yesterdayStart);
+      if (shift.end > dayStart) blocks.push({ start: dayStart, end: new Date(Math.min(shift.end.getTime(), dayEnd.getTime())) });
+    }
+    let continuesAfterMidnight = false;
+    if (today.plannedShift) {
+      const shift = await adjustForMeal(today.plannedShift, dayStart);
+      continuesAfterMidnight = shift.end > dayEnd;
+      blocks.push({ start: shift.start, end: new Date(Math.min(shift.end.getTime(), dayEnd.getTime())) });
+    }
+    // Dos bloques pegados o montados (ej. turno de 24 h): es un solo bloque.
+    if (blocks.length === 2 && blocks[0].end >= blocks[1].start) {
+      blocks.splice(0, 2, { start: blocks[0].start, end: blocks[1].end });
+    }
+
+    return {
+      plannedShift: blocks.length ? { start: blocks[0].start, end: blocks[blocks.length - 1].end } : undefined,
+      isScheduledRestDay: blocks.length === 0 && today.isScheduledRestDay,
+      finalExitWindowBeforeMin: today.finalExitWindowBeforeMin ?? yesterday?.finalExitWindowBeforeMin,
+      finalExitGraceMin: today.finalExitGraceMin ?? yesterday?.finalExitGraceMin,
+      blocks,
+      dayBreak: blocks.length === 2 ? { start: blocks[0].end, end: blocks[1].start } : undefined,
+      splitByMidnight: true,
+      continuesFromYesterday: tailCrosses && blocks.length > 0 && blocks[0].start.getTime() === dayStart.getTime(),
+      continuesAfterMidnight,
+      mealBreaks: meals
+        .map((meal) => ({ start: new Date(Math.max(meal.start.getTime(), dayStart.getTime())), end: new Date(Math.min(meal.end.getTime(), dayEnd.getTime())) }))
+        .filter((meal) => meal.end > meal.start),
+      breakToleranceMinutes: tolerance,
+      mealWindows,
+    };
+  }
+
+  /**
+   * El turno que EMPIEZA en `date` segun el horario, tal como esta
+   * configurado: si cruza la medianoche, su fin cae en el dia siguiente. Es
+   * la materia prima de `getPlannedShift`, que lo reparte por dia calendario.
+   */
+  private async getShiftStartingOn(userId: string, date: Date): Promise<ShiftResolution> {
     const shift = await this.findShiftForDay(userId, date);
     if (shift) {
       if (shift.isRestDay) return { plannedShift: undefined, isScheduledRestDay: true };
@@ -800,6 +991,79 @@ export class NoveltiesService {
   }
 
   /**
+   * Corte de medianoche de un dia que llega hasta las 24:00 (turnos que
+   * cruzan la medianoche, manejados por dia calendario). Si al terminar `day`
+   * la persona sigue presente -- entro esa noche, o volvio de su descanso, y
+   * no ha marcado salida -- el sistema:
+   *   1. le pone la salida de ese dia a las 23:59:59, y
+   *   2. si su turno continua, le pone la entrada del dia siguiente a las 00:00.
+   * Si la persona ya marco su salida (ej. a las 23:58), o salio al descanso y
+   * no volvio, o nunca llego, no se hace nada. Es idempotente: se puede
+   * llamar muchas veces (lo llaman el reloj de medianoche, el barrido de
+   * cada 30 min y cada marca del kiosco) sin duplicar nada.
+   * Devuelve true si creo alguna marca.
+   */
+  async midnightHandover(userId: string, day: Date, now: Date = new Date()): Promise<boolean> {
+    const dayStart = startOfLocalDay(day);
+    const dayEnd = addDays(dayStart, 1);
+    if (now < dayEnd || !usesMidnightSplit(dayStart)) return false;
+
+    // Presente a medianoche = la ULTIMA marca del dia es de "entrar" (entrada,
+    // o entrada de descanso). Si la ultima es una salida -- salio, o salio al
+    // descanso y no volvio -- o no hay marcas, no se hace nada. Se mira la
+    // ultima marca y no el juego completo del dia para que tambien funcione
+    // cuando falta la entrada (ej. olvido marcar al llegar la noche anterior).
+    const lastMark = await this.prisma.timeLog.findFirst({
+      where: { userId, loggedAt: { gte: dayStart, lt: dayEnd } },
+      orderBy: { loggedAt: 'desc' },
+      select: { logType: true, workSiteId: true },
+    });
+    if (!lastMark || (lastMark.logType !== TimeLogType.CHECK_IN && lastMark.logType !== TimeLogType.LUNCH_IN)) return false;
+
+    const plan = await this.getPlannedShift(userId, dayStart);
+    const lastBlock = plan.blocks[plan.blocks.length - 1];
+    if (!plan.splitByMidnight || !lastBlock || lastBlock.end.getTime() !== dayEnd.getTime()) return false;
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { companyId: true } });
+    if (!user) return false;
+    // La sede de las marcas automaticas es la de su ultima marca real de esa noche.
+    const workSiteId = lastMark.workSiteId ?? null;
+
+    const createMark = async (logType: TimeLogType, loggedAt: Date) => {
+      try {
+        const log = await this.prisma.timeLog.create({ data: { userId, workSiteId, logType, loggedAt, source: TimeLogSource.AUTO_MIDNIGHT } });
+        await this.prisma.auditLog.create({
+          data: {
+            companyId: user.companyId,
+            userId,
+            entity: 'TimeLog',
+            entityId: log.id,
+            action: 'AUTO_MIDNIGHT',
+            diff: { day: localDateKey(dayStart), logType, loggedAt: loggedAt.toISOString(), evaluatedAt: now.toISOString() },
+          },
+        });
+        return true;
+      } catch (error) {
+        if (isDuplicateMarkError(error)) return false; // ya existia (otra ejecucion, o una correccion manual)
+        throw error;
+      }
+    };
+
+    const closed = await createMark(TimeLogType.CHECK_OUT, new Date(dayEnd.getTime() - 1000));
+    let opened = false;
+    if (plan.continuesAfterMidnight) {
+      const alreadyIn = await this.prisma.timeLog.findFirst({
+        where: { userId, logType: TimeLogType.CHECK_IN, loggedAt: { gte: dayEnd, lt: addDays(dayEnd, 1) } },
+        select: { id: true },
+      });
+      if (!alreadyIn) opened = await createMark(TimeLogType.CHECK_IN, dayEnd);
+    }
+
+    if (closed) await this.calculateAndPersistForDay(userId, localDateKey(dayStart));
+    return closed || opened;
+  }
+
+  /**
    * Empaqueta, para el instante `now`, todo lo que la interpretacion de una
    * marca de kiosco/app movil necesita del horario del empleado: su turno
    * planeado de hoy y de ayer (misma resolucion Shift > UserSchedule >
@@ -813,24 +1077,39 @@ export class NoveltiesService {
     const today = startOfLocalDay(now);
     const yesterday = addDays(today, -1);
 
+    // Si la persona seguia trabajando anoche a medianoche y el corte
+    // automatico todavia no ha corrido (ej. el servidor se reinicio justo a
+    // esa hora), se hace ahora, antes de interpretar su marca de hoy.
+    await this.midnightHandover(userId, yesterday, now);
+
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    const [todayShift, yesterdayShift, lunchPolicy] = await Promise.all([
-      this.getPlannedShift(userId, today),
-      this.getPlannedShift(userId, yesterday),
-      this.getLunchPolicy(userId, today, user.allowsLunchSkip),
+    const todayShift = await this.getPlannedShift(userId, today);
+    const [yesterdayShift, lunchPolicy] = await Promise.all([
+      // Con el manejo por dia calendario, el dia de ayer quedo cerrado a la
+      // medianoche: ya no hay "turno de anoche" que continuar hoy. Solo se
+      // mira ayer mientras ese dia siga en el modelo viejo.
+      usesMidnightSplit(yesterday) ? Promise.resolve(undefined) : this.getShiftStartingOn(userId, yesterday),
+      this.getLunchPolicy(userId, today, user.allowsLunchSkip, todayShift),
     ]);
 
     return {
       todayPlannedShift: todayShift.plannedShift,
-      yesterdayPlannedShift: yesterdayShift.plannedShift,
-      allowsLunchSkip: user.allowsLunchSkip,
+      yesterdayPlannedShift: yesterdayShift?.plannedShift,
+      // En un dia partido la pausa que se marca es el descanso largo, que no se puede "saltar".
+      allowsLunchSkip: todayShift.splitByMidnight ? false : user.allowsLunchSkip,
+      // true = la pausa del dia es el descanso largo entre dos bloques: los mensajes dicen "descanso", no "almuerzo".
+      breakIsRest: Boolean(todayShift.dayBreak),
+      // Dia partido por la medianoche: sus bloques, para que el kiosco decida contra cada uno.
+      dayBlocks: todayShift.splitByMidnight ? todayShift.blocks : undefined,
+      continuesFromYesterday: todayShift.continuesFromYesterday,
+      mealWindows: todayShift.mealWindows,
       defaultLunchMinutes: lunchPolicy.defaultLunchMinutes,
       // Preferimos las ventanas del horario de hoy; si hoy no tiene Schedule
       // resuelto (ej. turno de rutina rotativa) usamos las de ayer para no
       // perder la configuracion en el caso de continuar un turno nocturno.
       // Si ninguno tiene, resolveNextMark aplica sus propios defaults.
-      finalExitWindowBeforeMin: todayShift.finalExitWindowBeforeMin ?? yesterdayShift.finalExitWindowBeforeMin,
-      finalExitGraceMin: todayShift.finalExitGraceMin ?? yesterdayShift.finalExitGraceMin,
+      finalExitWindowBeforeMin: todayShift.finalExitWindowBeforeMin ?? yesterdayShift?.finalExitWindowBeforeMin,
+      finalExitGraceMin: todayShift.finalExitGraceMin ?? yesterdayShift?.finalExitGraceMin,
       // Misma ventana de almuerzo (hora y tolerancia) que ya usa el motor de
       // nomina (resolveLunch en cst-rules) para decidir si un hueco sin
       // marcar es almuerzo o no -- resolveNextMark la usa para lo mismo: no

@@ -8,10 +8,10 @@ import {
   PayrollConfigParams,
   PAYROLL_REPORT_NOVELTY_CODES,
 } from '@cerberus/shared-types';
-import { DayMarks, resolveLunch } from './lunch-engine';
+import { DayMarks, resolveLunch, subtractAutomaticBreaks } from './lunch-engine';
 import { splitIntoHomogeneousSegments } from './time-window';
 import { classifySegments, emptyBuckets, HourBuckets, mergeBuckets } from './hours-classifier';
-import { round, roundMinutesToHalfHourBlocks } from './math-utils';
+import { round, roundHoursToHalfHourBlocks, roundMinutesToHalfHourBlocks } from './math-utils';
 
 const MINUTE_MS = 60_000;
 
@@ -37,6 +37,15 @@ export interface CalculateDailyNoveltiesInput {
   payrollConfig: PayrollConfigParams;
   /** Horario programado del dia, usado para detectar llegadas tarde / salidas anticipadas. */
   plannedShift?: PlannedShiftWindow;
+  /** Pausas automaticas que no se marcan (ej. comida dentro de un turno nocturno partido): se descuentan de lo trabajado. */
+  extraBreaks?: PlannedShiftWindow[];
+  /**
+   * Los dos bloques de trabajo de un dia partido por la medianoche (ej. 00:00
+   * a 06:00 y 22:00 a 24:00), cuando el dia tiene dos. Con esto la llegada
+   * tarde, la salida anticipada y la ausencia se miden contra CADA bloque, en
+   * vez de tratar el descanso largo del medio como un "almuerzo".
+   */
+  plannedBlocks?: PlannedShiftWindow[];
   /**
    * true cuando el horario (cargo, individual o rutina) marca este dia como
    * NO laboral (dia de descanso) y aun asi el empleado trabajo. En ese caso
@@ -101,10 +110,68 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
   const novelties: CalculatedNovelty[] = [];
 
   const lunchResolution = resolveLunch(marks, lunchPolicy, undefined, input.plannedShift);
-  novelties.push(...lunchResolution.novelties);
+
+  // Dia de dos bloques (turno que cruza la medianoche, manejado por dia
+  // calendario): la pausa que se marca es el descanso largo entre bloques,
+  // no un almuerzo. Sus novedades se expresan contra cada bloque.
+  const blocks = input.plannedBlocks && input.plannedBlocks.length === 2 ? input.plannedBlocks : undefined;
+  const missedFirstBlock = Boolean(blocks && marks.checkIn && marks.checkIn >= blocks[0].end);
+  const LUNCH_ONLY_CODES: NoveltyCode[] = [NoveltyCode.LLEGADA_TARDE_ALMUERZO, NoveltyCode.ABANDONO_ALMUERZO];
+  novelties.push(...lunchResolution.novelties.filter((n) => !blocks || !LUNCH_ONLY_CODES.includes(n.code)));
+
+  if (blocks) {
+    const [first, second] = blocks;
+    const clock = (date: Date) => {
+      const text = date.toTimeString().slice(0, 5);
+      return text === '00:00' && date > first.start ? '24:00' : text;
+    };
+    const hoursOf = (block: PlannedShiftWindow) => roundHoursToHalfHourBlocks((block.end.getTime() - block.start.getTime()) / (60 * MINUTE_MS));
+    const absence = (block: PlannedShiftWindow, notes: string) =>
+      novelties.push({
+        code: NoveltyCode.AUSENCIA_INJUSTIFICADA,
+        hours: hoursOf(block),
+        status: NoveltyStatus.AUTO_CALCULADA,
+        origin: NoveltyOrigin.SISTEMA,
+        notes,
+      });
+
+    if (missedFirstBlock) {
+      absence(first, `No trabajo su primer bloque del dia (${clock(first.start)} a ${clock(first.end)}), que es la continuacion del turno de la noche anterior.`);
+    }
+    if (marks.lunchOut && !missedFirstBlock) {
+      const earlyMinutes = (first.end.getTime() - marks.lunchOut.getTime()) / MINUTE_MS;
+      const earlyHours = roundMinutesToHalfHourBlocks(earlyMinutes, arrivalTolerance);
+      if (earlyHours > 0) {
+        novelties.push({
+          code: NoveltyCode.SALIDA_ANTICIPADA,
+          hours: earlyHours,
+          status: NoveltyStatus.AUTO_CALCULADA,
+          origin: NoveltyOrigin.SISTEMA,
+          notes: `Salio a su descanso ${Math.round(earlyMinutes)} min antes del fin de su primer bloque (${clock(first.end)}).`,
+        });
+      }
+    }
+    if (marks.lunchIn) {
+      const lateMinutes = (marks.lunchIn.getTime() - second.start.getTime()) / MINUTE_MS;
+      const lateHours = roundMinutesToHalfHourBlocks(lateMinutes, arrivalTolerance);
+      if (lateHours > 0) {
+        novelties.push({
+          code: NoveltyCode.LLEGADA_TARDE,
+          hours: lateHours,
+          status: NoveltyStatus.AUTO_CALCULADA,
+          origin: NoveltyOrigin.SISTEMA,
+          notes: `Volvio de su descanso ${Math.round(lateMinutes)} min despues del inicio de su segundo bloque (${clock(second.start)}).`,
+        });
+      }
+    } else if (marks.lunchOut && lunchResolution.novelties.some((n) => n.code === NoveltyCode.ABANDONO_ALMUERZO)) {
+      absence(second, `Salio a su descanso y no volvio para su segundo bloque del dia (${clock(second.start)} a ${clock(second.end)}).`);
+    }
+  }
 
   if (plannedShift && marks.checkIn) {
-    const lateMinutes = (marks.checkIn.getTime() - plannedShift.start.getTime()) / MINUTE_MS;
+    // Quien no trabajo el primer bloque y llega para el segundo se mide contra el inicio del segundo.
+    const expectedStart = blocks && missedFirstBlock ? blocks[1].start : plannedShift.start;
+    const lateMinutes = (marks.checkIn.getTime() - expectedStart.getTime()) / MINUTE_MS;
     const lateHours = roundMinutesToHalfHourBlocks(lateMinutes, arrivalTolerance);
     if (lateHours > 0) {
       novelties.push({
@@ -165,7 +232,7 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
     }
   };
 
-  for (const workedSegment of lunchResolution.workedSegments) {
+  for (const workedSegment of subtractAutomaticBreaks(lunchResolution.workedSegments, input.extraBreaks)) {
     let segment = workedSegment;
 
     // Con horario programado, la jornada ordinaria va de la hora de entrada a
@@ -225,9 +292,14 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
     const hours = buckets[code];
     if (hours <= 0) continue;
 
+    // Las extras ya vienen redondeadas en bloques de media hora; los recargos
+    // (nocturno, dominical) se redondean aqui con la misma regla de 15 min.
+    const shownHours = OVERTIME_CODES.has(code) ? round(hours) : roundHoursToHalfHourBlocks(hours);
+    if (shownHours <= 0) continue;
+
     novelties.push({
       code,
-      hours: round(hours),
+      hours: shownHours,
       status:
         OVERTIME_CODES.has(code) && payrollConfig.overtimeRequiresPreauthorization
           ? NoveltyStatus.PENDIENTE
@@ -285,9 +357,9 @@ export function calculateDailyNovelties(input: CalculateDailyNoveltiesInput): Da
     userId,
     workDate,
     novelties,
-    totalOrdinaryHours: round(ordinaryMinutesConsumedToday / 60),
+    totalOrdinaryHours: roundMinutesToHalfHourBlocks(ordinaryMinutesConsumedToday, arrivalTolerance),
     totalOvertimeHours: totalOvertimeHoursToday,
-    totalWorkedHours: round(totalWorkedMinutes / 60),
+    totalWorkedHours: roundMinutesToHalfHourBlocks(totalWorkedMinutes, arrivalTolerance),
     hasPendingOvertime,
     overtimeOrder,
   };

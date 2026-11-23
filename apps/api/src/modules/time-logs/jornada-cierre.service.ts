@@ -49,7 +49,36 @@ export class JornadaCierreService {
 
   @Cron('*/30 * * * *', { timeZone: 'America/Bogota' })
   async closeOverdueOpenShifts() {
+    // Repaso del corte de medianoche, por si el de las 00:00 no alcanzo a correr.
+    await this.runMidnightHandover();
     return this.closeOverdueOpenShiftsSince(LOOKBACK_DAYS);
+  }
+
+  /**
+   * Corte de medianoche: a las 00:00, a quien sigue trabajando en un turno
+   * que cruza la medianoche se le pone la salida del dia que termina
+   * (23:59:59) y la entrada del dia que empieza (00:00). Ver
+   * `NoveltiesService.midnightHandover`.
+   */
+  @Cron('0 0 * * *', { timeZone: 'America/Bogota' })
+  async runMidnightHandover(now: Date = new Date()) {
+    const today = startOfLocalDay(now);
+    const yesterday = addDays(today, -1);
+    // Candidatos: quien tenga alguna marca de ayer.
+    const logs = await this.prisma.timeLog.findMany({
+      where: { loggedAt: { gte: yesterday, lt: today } },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+    let handedOver = 0;
+    for (const { userId } of logs) {
+      try {
+        if (await this.noveltiesService.midnightHandover(userId, yesterday, now)) handedOver++;
+      } catch (error) {
+        this.logger.error(`Fallo el corte de medianoche del usuario ${userId}: ${(error as Error).message}`);
+      }
+    }
+    return { evaluated: logs.length, handedOver };
   }
 
   /**
@@ -94,15 +123,18 @@ export class JornadaCierreService {
   /** Devuelve true si esta ejecucion realmente cerro una jornada (para reportar en el disparo manual de pruebas). */
   private async evaluateAndCloseIfNeeded(userId: string, workDate: string, now: Date): Promise<boolean> {
     const dayStart = new Date(`${workDate}T00:00:00`);
+    // Si la persona seguia trabajando a medianoche, ese dia se cierra con el
+    // corte de medianoche (salida 23:59:59 + entrada del dia siguiente), no
+    // con un cierre por olvido.
+    await this.noveltiesService.midnightHandover(userId, dayStart, now);
     const marks = await findShiftMarks(this.prisma, userId, dayStart);
     if (!marks.checkIn || marks.checkOut) return false;
 
-    const { plannedShift, finalExitGraceMin } = await this.noveltiesService.getPlannedShift(userId, dayStart);
+    const plan = await this.noveltiesService.getPlannedShift(userId, dayStart);
+    const { plannedShift, finalExitGraceMin } = plan;
     if (!plannedShift) return false; // sin horario resuelto: no se auto-cierra, queda para revision manual
 
     const graceMinutes = finalExitGraceMin ?? DEFAULT_FINAL_EXIT_GRACE_MIN;
-    const graceEnd = new Date(plannedShift.end.getTime() + graceMinutes * 60_000);
-    if (now < graceEnd) return false;
 
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
@@ -116,6 +148,64 @@ export class JornadaCierreService {
       select: { workSiteId: true },
     });
 
+    // Dia partido por la medianoche (ej. 00:00-06:00 y 22:00-24:00): si la
+    // persona trabajo el primer bloque y se le olvido marcar la salida al
+    // descanso, se le pone a la hora programada y queda para revision. Asi su
+    // marca de la noche se entiende como la entrada de descanso, no como una
+    // salida a descanso tardia.
+    if (plan.dayBreak && !marks.lunchOut && marks.checkIn < plan.dayBreak.start) {
+      if (now < new Date(plan.dayBreak.start.getTime() + graceMinutes * 60_000)) return false;
+      let breakLogId: string;
+      try {
+        const created = await this.prisma.timeLog.create({
+          data: {
+            userId,
+            workSiteId: checkInLog?.workSiteId,
+            logType: TimeLogType.LUNCH_OUT,
+            loggedAt: plan.dayBreak.start,
+            source: TimeLogSource.AUTO_CLOSE,
+          },
+        });
+        breakLogId = created.id;
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return false;
+        throw err;
+      }
+      await this.noveltiesService.calculateAndPersistForDay(userId, workDate);
+      await this.prisma.novelty.create({
+        data: {
+          userId,
+          workDate: dayStart,
+          code: NoveltyCode.SALIDA_NO_REGISTRADA,
+          hours: 0,
+          status: NoveltyStatus.PENDIENTE,
+          origin: NoveltyOrigin.MANUAL,
+          sourceTimeLogId: breakLogId,
+          notes:
+            'La persona no registro su salida a descanso. El sistema la puso a la hora programada de fin del primer bloque del turno. Verificar a que hora salio realmente.',
+        },
+      });
+      await this.prisma.auditLog.create({
+        data: {
+          companyId: user.companyId,
+          userId,
+          entity: 'TimeLog',
+          entityId: breakLogId,
+          action: 'AUTO_CLOSE',
+          diff: { workDate, ruleUsed: 'dayBreak.start + finalExitGraceMin', breakStart: plan.dayBreak.start.toISOString(), graceMinutes, evaluatedAt: now.toISOString() },
+        },
+      });
+      return true;
+    }
+
+    const graceEnd = new Date(plannedShift.end.getTime() + graceMinutes * 60_000);
+    if (now < graceEnd) return false;
+
+    // La salida automatica nunca se pasa al dia siguiente: un dia que llega
+    // hasta la medianoche se cierra a las 23:59:59 de ese mismo dia.
+    const lastSecondOfDay = new Date(addDays(dayStart, 1).getTime() - 1000);
+    const closeAt = plan.splitByMidnight && plannedShift.end > lastSecondOfDay ? lastSecondOfDay : plannedShift.end;
+
     let createdLogId: string;
     try {
       const created = await this.prisma.timeLog.create({
@@ -123,7 +213,7 @@ export class JornadaCierreService {
           userId,
           workSiteId: checkInLog?.workSiteId,
           logType: TimeLogType.CHECK_OUT,
-          loggedAt: plannedShift.end,
+          loggedAt: closeAt,
           source: TimeLogSource.AUTO_CLOSE,
         },
       });
@@ -148,7 +238,9 @@ export class JornadaCierreService {
         origin: NoveltyOrigin.MANUAL,
         sourceTimeLogId: createdLogId,
         notes:
-          'La persona no registro salida manualmente. La jornada fue cerrada automaticamente durante el proceso de cierre diario. Se asigno como hora de salida la hora programada de finalizacion de su turno.',
+          marks.lunchOut && !marks.lunchIn
+            ? 'La persona salio a su descanso y no registro el regreso. La jornada fue cerrada automaticamente; solo cuenta lo trabajado antes del descanso.'
+            : 'La persona no registro salida manualmente. La jornada fue cerrada automaticamente durante el proceso de cierre diario. Se asigno como hora de salida la hora programada de finalizacion de su turno.',
       },
     });
 

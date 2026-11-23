@@ -1,6 +1,6 @@
 import { CalculatedNovelty, LunchPolicy } from '@cerberus/shared-types';
 import { NoveltyCode, NoveltyOrigin, NoveltyStatus } from '@cerberus/shared-types';
-import { round, roundMinutesToHalfHourBlocks } from './math-utils';
+import { roundHoursToHalfHourBlocks, roundMinutesToHalfHourBlocks } from './math-utils';
 
 const MINUTE_MS = 60_000;
 
@@ -111,7 +111,7 @@ export function resolveLunch(
     if (elapsedSinceLunchOut > allowedMinutes) {
       novelties.push({
         code: NoveltyCode.ABANDONO_ALMUERZO,
-        hours: round(elapsedSinceLunchOut / 60),
+        hours: roundHoursToHalfHourBlocks(elapsedSinceLunchOut / 60),
         status: NoveltyStatus.PENDIENTE,
         origin: NoveltyOrigin.SISTEMA,
         notes: 'No se registro el reingreso de almuerzo (Marca 3) dentro del limite permitido.',
@@ -225,4 +225,34 @@ export function resolveLunch(
   }
 
   return { workedSegments: [], novelties, lunchMinutesDeducted: 0 };
+}
+
+/**
+ * Quita de los intervalos trabajados las pausas automaticas (`breaks`) que la
+ * persona no marca -- ej. la comida de un turno nocturno partido por dia
+ * calendario, donde las marcas de "almuerzo" ya se usan para el descanso largo
+ * del dia. Misma regla que el almuerzo automatico: solo se descuenta si la
+ * persona estaba trabajando durante TODA la pausa (entro antes y seguia ahi
+ * cuando termino).
+ */
+export function subtractAutomaticBreaks(
+  segments: Array<{ start: Date; end: Date }>,
+  breaks: Array<{ start: Date; end: Date }> | undefined,
+): Array<{ start: Date; end: Date }> {
+  if (!breaks || breaks.length === 0) return segments;
+  let result = segments;
+  for (const pause of breaks) {
+    if (pause.end <= pause.start) continue;
+    const next: Array<{ start: Date; end: Date }> = [];
+    for (const segment of result) {
+      if (segment.start <= pause.start && segment.end >= pause.end) {
+        if (pause.start > segment.start) next.push({ start: segment.start, end: pause.start });
+        if (segment.end > pause.end) next.push({ start: pause.end, end: segment.end });
+      } else {
+        next.push(segment);
+      }
+    }
+    result = next;
+  }
+  return result;
 }

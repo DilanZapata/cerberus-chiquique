@@ -1001,7 +1001,7 @@ export interface TimeLogHistoryEntry {
   id: string;
   logType: 'CHECK_IN' | 'LUNCH_OUT' | 'LUNCH_IN' | 'CHECK_OUT';
   loggedAt: string;
-  source: 'KIOSK' | 'MOBILE_GPS' | 'WEB' | 'MANUAL';
+  source: 'KIOSK' | 'MOBILE_GPS' | 'WEB' | 'MANUAL' | 'AUTO_CLOSE' | 'AUTO_MIDNIGHT';
   latitude: number | null;
   longitude: number | null;
   gpsValid: boolean | null;

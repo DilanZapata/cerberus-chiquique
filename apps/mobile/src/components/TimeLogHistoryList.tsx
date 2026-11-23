@@ -18,6 +18,8 @@ const SOURCE_LABELS: Record<string, string> = {
   MOBILE_GPS: 'App movil (GPS)',
   WEB: 'Web',
   MANUAL: 'Carga manual',
+  AUTO_CLOSE: 'Sistema (cierre por olvido)',
+  AUTO_MIDNIGHT: 'Sistema (corte de medianoche)',
 };
 
 // Fechas LOCALES del telefono (toISOString daria la de UTC: despues de las

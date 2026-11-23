@@ -45,6 +45,8 @@ enum TimeLogSource {
   WEB
   MANUAL
   AUTO_CLOSE
+  // Corte de medianoche: salida 23:59:59 / entrada 00:00 que pone el sistema a quien sigue trabajando.
+  AUTO_MIDNIGHT
 
   @@map("time_log_source_enum")
 }

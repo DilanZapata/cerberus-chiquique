@@ -27,6 +27,16 @@ const LOG_TYPE_LABELS: Record<string, string> = {
   CHECK_OUT: 'Salida registrada',
 };
 
+// Turno de noche manejado por dia: la pausa entre los dos bloques es un descanso, no un almuerzo.
+const REST_BREAK_LABELS: Record<string, string> = {
+  LUNCH_OUT: 'Salida a descanso registrada',
+  LUNCH_IN: 'Entrada de descanso registrada',
+};
+
+function markLabel(result: { logType: string; breakIsRest?: boolean }): string {
+  return (result.breakIsRest ? REST_BREAK_LABELS[result.logType] : undefined) ?? LOG_TYPE_LABELS[result.logType];
+}
+
 // Todo configurable en un solo lugar, tal como se pidio.
 const PROBE_INTERVAL_MS = 1200; // cada cuanto se toma una foto liviana para sondear si hay alguien
 const STABILITY_THRESHOLD = 2; // sondeos consecutivos de la MISMA persona antes de capturar de verdad
@@ -261,7 +271,7 @@ export default function KioskScreen({}: Props) {
       setKioskState('PROCESSING');
       const result = await kioskFaceClock({ ...coordsRef.current, imageBase64: `data:image/jpeg;base64,${photo.base64}` });
       setResultTone('success');
-      setResultMessage(`${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString()}`);
+      setResultMessage(`${result.fullName}: ${markLabel(result)} a las ${new Date(result.loggedAt).toLocaleTimeString()}`);
       setKioskState('SUCCESS');
     } catch (err) {
       if (err instanceof ApiError) {
@@ -409,7 +419,7 @@ export default function KioskScreen({}: Props) {
       if (!photo?.base64) throw new Error('No se pudo tomar la foto. Mira a la camara e intenta de nuevo.');
       const result = await kioskClock({ ...coords, identifier: value, imageBase64: `data:image/jpeg;base64,${photo.base64}` });
       setPinMessage(
-        `${result.fullName}: ${LOG_TYPE_LABELS[result.logType]} a las ${new Date(result.loggedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`,
+        `${result.fullName}: ${markLabel(result)} a las ${new Date(result.loggedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`,
       );
       setIdentifier('');
     } catch (err) {

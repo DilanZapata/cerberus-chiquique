@@ -134,6 +134,14 @@ export interface MarkResolutionContext {
   lunchWindowStart?: string;
   lunchWindowEnd?: string;
   lunchToleranceMinutes?: number;
+  /** La pausa del dia es el descanso largo entre dos bloques (turno partido por la medianoche), no un almuerzo. */
+  breakIsRest?: boolean;
+  /** Bloques de trabajo del dia cuando viene partido por la medianoche (1 o 2). Undefined en un dia normal. */
+  dayBlocks?: PlannedShiftWindow[];
+  /** El primer bloque arranca a las 00:00 porque es la continuacion del turno de anoche. */
+  continuesFromYesterday?: boolean;
+  /** Rangos en que antes se marcaba la comida del turno de noche: ya no se marca, se descuenta sola. */
+  mealWindows?: PlannedShiftWindow[];
 }
 
 /**
@@ -232,8 +240,36 @@ export async function findShiftMarks(prisma: PrismaService, userId: string, date
     orderBy: { loggedAt: 'asc' },
   });
 
-  const byType = (type: TimeLogType) => subsequent.find((l) => l.logType === type)?.loggedAt;
   const checkOutLog = subsequent.find((l) => l.logType === TimeLogType.CHECK_OUT);
+  // Una marca de pausa posterior a la salida ya no es de esta jornada (ej. la
+  // "salida a descanso" de la manana siguiente): no se le pega a este dia.
+  const byType = (type: TimeLogType) =>
+    subsequent.find((l) => l.logType === type && (!checkOutLog || l.loggedAt < checkOutLog.loggedAt))?.loggedAt;
+
+  // Corte de medianoche sin salida guardada: si a las 00:00 del dia siguiente
+  // el sistema le puso la entrada automatica, es que la persona seguia
+  // trabajando a medianoche, asi que este dia termino a las 23:59:59 aunque
+  // no exista esa fila. Pasa el PRIMER dia del manejo por dia calendario a
+  // quien venia de un turno de noche: ese dia ya tiene la salida de la manana
+  // (del turno de la noche anterior) y la base no admite una segunda salida
+  // el mismo dia.
+  if (!checkOutLog) {
+    const midnight = addDays(startOfLocalDay(checkInLog.loggedAt), 1);
+    const handover = await prisma.timeLog.findFirst({
+      where: { userId, logType: TimeLogType.CHECK_IN, source: TimeLogSource.AUTO_MIDNIGHT, loggedAt: midnight },
+      select: { id: true },
+    });
+    const stillInside = !subsequent.some((l) => l.logType === TimeLogType.LUNCH_OUT) || subsequent.some((l) => l.logType === TimeLogType.LUNCH_IN);
+    if (handover && stillInside) {
+      return {
+        checkIn: checkInLog.loggedAt,
+        lunchOut: byType(TimeLogType.LUNCH_OUT),
+        lunchIn: byType(TimeLogType.LUNCH_IN),
+        checkOut: new Date(midnight.getTime() - 1000),
+        checkOutSource: TimeLogSource.AUTO_MIDNIGHT,
+      };
+    }
+  }
 
   return {
     checkIn: checkInLog.loggedAt,
@@ -472,6 +508,116 @@ function decideForClosedShift(
 }
 
 export async function resolveNextMark(
+  prisma: PrismaService,
+  userId: string,
+  now: Date,
+  context: MarkResolutionContext,
+): Promise<ResolvedMark | RepeatedMark | null> {
+  const result = (await resolveSplitDayMark(prisma, userId, now, context)) ?? (await resolveNextMarkByShift(prisma, userId, now, context));
+  // En un dia de dos bloques la pausa no es un almuerzo: el mensaje habla de "descanso".
+  if (result && context.breakIsRest && isRepeatedMark(result)) {
+    return {
+      ...result,
+      message: result.message
+        .replace(MARK_NAMES[TimeLogType.LUNCH_OUT], 'tu salida a descanso')
+        .replace(MARK_NAMES[TimeLogType.LUNCH_IN], 'tu entrada de descanso'),
+    };
+  }
+  return result;
+}
+
+/**
+ * Reglas propias de un dia partido por la medianoche (turno de noche manejado
+ * por dia calendario: bloque de la madrugada 00:00-06:00 y bloque de la noche
+ * 22:00-24:00). Devuelve la decision si alguna regla aplica, o null para que
+ * siga la logica general.
+ *
+ *  - La comida del turno ya no se marca: una marca en ese rango se rechaza
+ *    con un mensaje claro (antes se guardaba como "salida" y danaba el dia).
+ *  - Durante el descanso largo entre bloques, una marca de mas no es la
+ *    "entrada de descanso": solo cuenta como tal cuando ya se acerca el
+ *    segundo bloque.
+ *  - Si falta la entrada (olvido marcar al llegar la noche anterior, asi que
+ *    a medianoche el sistema no le puso la de hoy), la marca del final de la
+ *    madrugada se guarda como su salida, no como una entrada; queda una
+ *    jornada sin entrada, que completa el supervisor.
+ */
+async function resolveSplitDayMark(
+  prisma: PrismaService,
+  userId: string,
+  now: Date,
+  context: MarkResolutionContext,
+): Promise<ResolvedMark | RepeatedMark | null> {
+  const blocks = context.dayBlocks;
+  if (!blocks || blocks.length === 0) return null;
+  const today = startOfLocalDay(now);
+  const workDate = dateKey(today);
+  const first = blocks[0];
+  const second = blocks[1];
+  const exitWindowMs = (context.finalExitWindowBeforeMin ?? DEFAULT_FINAL_EXIT_WINDOW_BEFORE_MIN) * 60_000;
+  const nearSecondBlock = Boolean(second) && now.getTime() >= second.start.getTime() - MIN_MINUTES_BEFORE_NEXT_SHIFT_START * 60_000;
+
+  const logs = await prisma.timeLog.findMany({
+    where: { userId, loggedAt: { gte: today, lte: now } },
+    orderBy: { loggedAt: 'asc' },
+    select: { logType: true, loggedAt: true },
+  });
+  const last = (type: TimeLogType) => [...logs].reverse().find((log) => log.logType === type);
+  const checkIn = last(TimeLogType.CHECK_IN);
+  const lunchOut = last(TimeLogType.LUNCH_OUT);
+  const lunchIn = last(TimeLogType.LUNCH_IN);
+  const checkOut = last(TimeLogType.CHECK_OUT);
+  const lastLog = logs[logs.length - 1];
+  const isInside = Boolean(lastLog && (lastLog.logType === TimeLogType.CHECK_IN || lastLog.logType === TimeLogType.LUNCH_IN));
+
+  // La comida del turno de noche no se marca.
+  if (isInside && context.mealWindows?.some((window) => now >= window.start && now <= window.end)) {
+    return {
+      repeated: true,
+      message: 'La comida del turno de noche ya no se marca: el sistema la descuenta sola. No se guardo esta marca.',
+    };
+  }
+
+  if (second && !nearSecondBlock) {
+    const nextBlock = `Tu siguiente bloque empieza a las ${hhmmOf(second.start)}.`;
+    // Ya salio a su descanso (o se fue antes): una marca mas, lejos del segundo bloque, es repetida.
+    if (lunchOut && !lunchIn) return repeatedMark(TimeLogType.LUNCH_OUT, lunchOut.loggedAt, nextBlock);
+    if (checkOut && !lunchOut) return repeatedMark(TimeLogType.CHECK_OUT, checkOut.loggedAt, nextBlock);
+  }
+
+  if (checkIn) return null; // con entrada: sigue la logica general
+
+  // --- Sin entrada hoy ---
+  const atEndOfFirstBlock = Boolean(context.continuesFromYesterday) && now.getTime() >= first.end.getTime() - exitWindowMs;
+  if (second) {
+    if (!nearSecondBlock && atEndOfFirstBlock) {
+      return {
+        nextLogType: TimeLogType.LUNCH_OUT,
+        workDate,
+        reason: 'Fin del primer bloque del dia sin entrada registrada: se guarda como salida a descanso (falta la entrada, que debe completar un supervisor).',
+      };
+    }
+    if (nearSecondBlock && lunchOut && !lunchIn) {
+      return { nextLogType: TimeLogType.LUNCH_IN, workDate, reason: 'Vuelve de su descanso para el segundo bloque del dia (jornada sin entrada registrada).' };
+    }
+    if (nearSecondBlock && lunchIn && !checkOut) {
+      return repeatedMark(TimeLogType.LUNCH_IN, lunchIn.loggedAt, 'No hace falta marcar de nuevo.');
+    }
+    return null;
+  }
+
+  if (atEndOfFirstBlock) {
+    if (checkOut) return repeatedMark(TimeLogType.CHECK_OUT, checkOut.loggedAt, 'No hace falta marcar de nuevo.');
+    return {
+      nextLogType: TimeLogType.CHECK_OUT,
+      workDate,
+      reason: 'Fin del turno sin entrada registrada: se guarda como salida (falta la entrada, que debe completar un supervisor).',
+    };
+  }
+  return null;
+}
+
+async function resolveNextMarkByShift(
   prisma: PrismaService,
   userId: string,
   now: Date,
