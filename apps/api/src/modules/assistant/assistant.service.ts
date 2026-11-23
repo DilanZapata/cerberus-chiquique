@@ -3,7 +3,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { OvertimeApprovalService } from '../novelties/services/overtime-approval.service';
-import { callOpenAi, OpenAiMessage, OpenAiTool } from './openai.client';
+import { AssistantTool, runAssistantTurn } from './openai.client';
 
 /** Vueltas maximas de "el modelo pide una herramienta -> se le responde" por mensaje del usuario. */
 const MAX_TOOL_ROUNDS = 6;
@@ -81,97 +81,82 @@ interface ProposalPayload {
   days: Array<{ date: string; hours: number; mode: 'PENDIENTES' | 'TOTAL'; reason: string }>;
 }
 
-const TOOLS: OpenAiTool[] = [
+const TOOLS: AssistantTool[] = [
   {
-    type: 'function',
-    function: {
-      name: 'buscar_empleado',
-      description:
-        'Busca empleados de la empresa por nombre, cedula o codigo. Usala SIEMPRE antes de consultar o autorizar algo de una persona, para obtener su id. Si hay varios resultados parecidos, pregunta al usuario cual es.',
-      parameters: {
-        type: 'object',
-        properties: { texto: { type: 'string', description: 'Nombre (o parte), cedula o codigo del empleado.' } },
-        required: ['texto'],
-        additionalProperties: false,
-      },
+    name: 'buscar_empleado',
+    description:
+      'Busca empleados de la empresa por nombre, cedula o codigo. Usala SIEMPRE antes de consultar o autorizar algo de una persona, para obtener su id. Si hay varios resultados parecidos, pregunta al usuario cual es.',
+    parameters: {
+      type: 'object',
+      properties: { texto: { type: 'string', description: 'Nombre (o parte), cedula o codigo del empleado.' } },
+      required: ['texto'],
+      additionalProperties: false,
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'horas_extra_empleado',
-      description:
-        'Horas extra de un empleado dia por dia en un rango de fechas: trabajadas, autorizadas, pendientes de autorizar y rechazadas, con el motivo de cada autorizacion.',
-      parameters: {
-        type: 'object',
-        properties: {
-          empleado_id: { type: 'string' },
-          desde: { type: 'string', description: 'Fecha inicial YYYY-MM-DD.' },
-          hasta: { type: 'string', description: 'Fecha final YYYY-MM-DD (maximo 62 dias de rango).' },
+    name: 'horas_extra_empleado',
+    description:
+      'Horas extra de un empleado dia por dia en un rango de fechas: trabajadas, autorizadas, pendientes de autorizar y rechazadas, con el motivo de cada autorizacion.',
+    parameters: {
+      type: 'object',
+      properties: {
+        empleado_id: { type: 'string' },
+        desde: { type: 'string', description: 'Fecha inicial YYYY-MM-DD.' },
+        hasta: { type: 'string', description: 'Fecha final YYYY-MM-DD (maximo 62 dias de rango).' },
+      },
+      required: ['empleado_id', 'desde', 'hasta'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'horas_extra_pendientes',
+    description: 'Lista de horas extra PENDIENTES de autorizar en toda la empresa (quien, que dia, cuantas horas).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'novedades_empleado',
+    description:
+      'Novedades de asistencia de un empleado en un rango de fechas: llegadas tarde, salidas anticipadas, ausencias, permisos, incapacidades, recargos, alertas. Devuelve el conteo por tipo y el detalle por dia.',
+    parameters: {
+      type: 'object',
+      properties: {
+        empleado_id: { type: 'string' },
+        desde: { type: 'string', description: 'Fecha inicial YYYY-MM-DD.' },
+        hasta: { type: 'string', description: 'Fecha final YYYY-MM-DD (maximo 62 dias de rango).' },
+        tipo: {
+          type: 'string',
+          enum: ['TODAS', ...Object.keys(NOVELTY_GROUPS)],
+          description: 'Filtra por tipo de novedad. TODAS para verlas todas.',
         },
-        required: ['empleado_id', 'desde', 'hasta'],
-        additionalProperties: false,
       },
+      required: ['empleado_id', 'desde', 'hasta', 'tipo'],
+      additionalProperties: false,
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'horas_extra_pendientes',
-      description: 'Lista de horas extra PENDIENTES de autorizar en toda la empresa (quien, que dia, cuantas horas).',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'novedades_empleado',
-      description:
-        'Novedades de asistencia de un empleado en un rango de fechas: llegadas tarde, salidas anticipadas, ausencias, permisos, incapacidades, recargos, alertas. Devuelve el conteo por tipo y el detalle por dia.',
-      parameters: {
-        type: 'object',
-        properties: {
-          empleado_id: { type: 'string' },
-          desde: { type: 'string', description: 'Fecha inicial YYYY-MM-DD.' },
-          hasta: { type: 'string', description: 'Fecha final YYYY-MM-DD (maximo 62 dias de rango).' },
-          tipo: {
-            type: 'string',
-            enum: ['TODAS', ...Object.keys(NOVELTY_GROUPS)],
-            description: 'Filtra por tipo de novedad. TODAS para verlas todas.',
-          },
-        },
-        required: ['empleado_id', 'desde', 'hasta', 'tipo'],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'proponer_autorizacion',
-      description:
-        'Deja LISTA (no la ejecuta) una autorizacion de horas extra para un empleado, uno o varios dias. Solo se llama cuando el usuario ya dijo, PARA CADA DIA, cuantas horas y el motivo de ese dia. El usuario despues la confirma con un boton en la app. Si un dia tiene horas pendientes, "horas" son las que se aprueban de esas pendientes; si no tiene pendientes, "horas" es el total que queda autorizado para ese dia.',
-      parameters: {
-        type: 'object',
-        properties: {
-          empleado_id: { type: 'string' },
-          dias: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                fecha: { type: 'string', description: 'Dia YYYY-MM-DD.' },
-                horas: { type: 'number', description: 'Horas a autorizar ese dia, en pasos de media hora (0.5, 1, 1.5...).' },
-                motivo: { type: 'string', description: 'El motivo que dio el usuario PARA ESE DIA, con sus palabras. Nunca inventado.' },
-              },
-              required: ['fecha', 'horas', 'motivo'],
-              additionalProperties: false,
+    name: 'proponer_autorizacion',
+    description:
+      'Deja LISTA (no la ejecuta) una autorizacion de horas extra para un empleado, uno o varios dias. Solo se llama cuando el usuario ya dijo, PARA CADA DIA, cuantas horas y el motivo de ese dia. El usuario despues la confirma con un boton en la app. Si un dia tiene horas pendientes, "horas" son las que se aprueban de esas pendientes; si no tiene pendientes, "horas" es el total que queda autorizado para ese dia.',
+    parameters: {
+      type: 'object',
+      properties: {
+        empleado_id: { type: 'string' },
+        dias: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              fecha: { type: 'string', description: 'Dia YYYY-MM-DD.' },
+              horas: { type: 'number', description: 'Horas a autorizar ese dia, en pasos de media hora (0.5, 1, 1.5...).' },
+              motivo: { type: 'string', description: 'El motivo que dio el usuario PARA ESE DIA, con sus palabras. Nunca inventado.' },
             },
+            required: ['fecha', 'horas', 'motivo'],
+            additionalProperties: false,
           },
         },
-        required: ['empleado_id', 'dias'],
-        additionalProperties: false,
       },
+      required: ['empleado_id', 'dias'],
+      additionalProperties: false,
     },
   },
 ];
@@ -222,27 +207,21 @@ export class AssistantService {
       this.overtime.getPermissions(actor),
     ]);
 
-    const messages: OpenAiMessage[] = [
-      { role: 'system', content: this.systemPrompt(me?.fullName ?? 'Usuario', actor.role, permissions.canApprove) },
-      ...history.map((message) => ({ role: message.role, content: message.content })),
-    ];
-
     let proposal: OvertimeProposal | null = null;
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const answer = await callOpenAi(messages, TOOLS);
-      if (!answer.tool_calls || answer.tool_calls.length === 0) {
-        return { reply: (answer.content ?? '').trim() || 'No tengo una respuesta para eso.', pendingAction: proposal };
-      }
-      messages.push(answer);
-      for (const call of answer.tool_calls) {
-        const result = await this.runTool(actor, call.function.name, call.function.arguments);
+    const reply = await runAssistantTurn({
+      system: this.systemPrompt(me?.fullName ?? 'Usuario', actor.role, permissions.canApprove),
+      history: history.map((message) => ({ role: message.role, content: message.content })),
+      tools: TOOLS,
+      maxRounds: MAX_TOOL_ROUNDS,
+      runTool: async (name, rawArguments) => {
+        const result = await this.runTool(actor, name, rawArguments);
         if (result.proposal) proposal = result.proposal;
-        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result.output) });
-      }
-    }
+        return JSON.stringify(result.output);
+      },
+    });
     return {
-      reply: 'No alcance a terminar esa consulta. Intenta pedirla en partes mas pequenas.',
-      pendingAction: proposal,
+      reply: reply || (proposal ? 'Revisa el resumen y toca Confirmar para que quede hecho.' : 'No alcance a terminar esa consulta. Intenta pedirla en partes mas pequenas.'),
+      pendingAction: proposal as OvertimeProposal | null,
     };
   }
 

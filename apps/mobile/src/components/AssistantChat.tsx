@@ -2,7 +2,8 @@ import { Dispatch, SetStateAction, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  KeyboardAvoidingView,
+  Keyboard,
+  KeyboardEvent,
   Platform,
   StyleSheet,
   Text,
@@ -10,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { assistantChat, AssistantChatMessage, assistantConfirm, AssistantProposal } from '../services/api';
@@ -56,6 +58,73 @@ export default function AssistantChat({ items, setItems }: { items: ChatItem[]; 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<ChatItem>>(null);
+  const containerRef = useRef<View>(null);
+  /** Cuanto tapa el teclado la parte de abajo del chat (0 = teclado cerrado, o la ventana ya se encogio sola). */
+  const [keyboardOverlap, setKeyboardOverlap] = useState(0);
+  const [listening, setListening] = useState(false);
+  const [dictationNotice, setDictationNotice] = useState<string | null>(null);
+  /** Lo que ya estaba escrito cuando empezo el dictado: lo dictado se le agrega al final. */
+  const textBeforeDictation = useRef('');
+
+  // El campo de escribir siempre queda encima del teclado. Dentro de una
+  // ventana (Modal) el sistema no siempre encoge la pantalla al abrir el
+  // teclado, asi que se mide cuanto tapa el teclado al chat y se sube
+  // exactamente eso. Si el sistema si la encogio, la medida da 0 y no se
+  // sube dos veces.
+  useEffect(() => {
+    const onShow = (event: KeyboardEvent) => {
+      const keyboardTop = event.endCoordinates.screenY;
+      containerRef.current?.measureInWindow((_x, y, _width, height) => {
+        setKeyboardOverlap(Math.max(0, Math.round(y + height - keyboardTop)));
+      });
+    };
+    const onHide = () => setKeyboardOverlap(0);
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const subscriptions = [Keyboard.addListener(showEvent, onShow), Keyboard.addListener(hideEvent, onHide)];
+    return () => subscriptions.forEach((subscription) => subscription.remove());
+  }, []);
+
+  // ---- Dictado por voz: lo que se dice aparece en el campo de escribir, para revisarlo antes de enviar ----
+  useSpeechRecognitionEvent('start', () => setListening(true));
+  useSpeechRecognitionEvent('end', () => setListening(false));
+  useSpeechRecognitionEvent('result', (event) => {
+    const spoken = event.results[0]?.transcript ?? '';
+    const before = textBeforeDictation.current;
+    setText(`${before}${before && spoken ? ' ' : ''}${spoken}`);
+  });
+  useSpeechRecognitionEvent('error', (event) => {
+    setListening(false);
+    if (event.error === 'aborted') return;
+    setDictationNotice(
+      event.error === 'not-allowed'
+        ? 'Falta el permiso del microfono. Actívalo en los ajustes del teléfono para poder dictar.'
+        : event.error === 'no-speech' || event.error === 'speech-timeout'
+          ? 'No te escuché. Toca Dictar e intenta de nuevo.'
+          : event.error === 'service-not-allowed' || event.error === 'language-not-supported'
+            ? 'Este teléfono no tiene disponible el dictado por voz. Puedes usar el micrófono del teclado.'
+            : event.error === 'network'
+              ? 'El dictado necesita internet. Revisa la conexión e intenta de nuevo.'
+              : 'No se pudo usar el dictado. Intenta de nuevo o escribe el mensaje.',
+    );
+  });
+  // Al cerrar la ventana del asistente se suelta el microfono.
+  useEffect(() => () => ExpoSpeechRecognitionModule.abort(), []);
+
+  async function toggleDictation() {
+    setDictationNotice(null);
+    if (listening) {
+      ExpoSpeechRecognitionModule.stop();
+      return;
+    }
+    const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+    if (!permission.granted) {
+      setDictationNotice('Falta el permiso del microfono. Actívalo en los ajustes del teléfono para poder dictar.');
+      return;
+    }
+    textBeforeDictation.current = text.trim();
+    ExpoSpeechRecognitionModule.start({ lang: 'es-CO', interimResults: true, continuous: false });
+  }
 
   useEffect(() => {
     // Siempre a la vista el ultimo mensaje.
@@ -68,6 +137,8 @@ export default function AssistantChat({ items, setItems }: { items: ChatItem[]; 
   async function send(raw: string) {
     const content = raw.trim();
     if (!content || sending || !session) return;
+    if (listening) ExpoSpeechRecognitionModule.stop();
+    setDictationNotice(null);
     const userItem: ChatItem = { id: newId(), role: 'user', content };
     const nextItems = [...items, userItem];
     setItems(nextItems);
@@ -127,7 +198,7 @@ export default function AssistantChat({ items, setItems }: { items: ChatItem[]; 
   }
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+    <View ref={containerRef} collapsable={false} style={[styles.container, { paddingBottom: keyboardOverlap }]}>
       <FlatList
         ref={listRef}
         data={items}
@@ -160,7 +231,20 @@ export default function AssistantChat({ items, setItems }: { items: ChatItem[]; 
           ) : null
         }
       />
-      <View style={[styles.inputBar, { paddingBottom: 10 + insets.bottom }]}>
+      {(listening || dictationNotice) && (
+        <Text style={[styles.dictationNotice, listening && styles.dictationListening]}>
+          {listening ? 'Escuchando… habla ahora. Toca Parar cuando termines.' : dictationNotice}
+        </Text>
+      )}
+      <View style={[styles.inputBar, { paddingBottom: keyboardOverlap > 0 ? 10 : 10 + insets.bottom }]}>
+        <TouchableOpacity
+          style={[styles.micButton, listening && styles.micButtonActive]}
+          onPress={toggleDictation}
+          disabled={sending}
+          accessibilityLabel={listening ? 'Parar el dictado' : 'Dictar el mensaje con la voz'}
+        >
+          <Text style={[styles.micButtonText, listening && styles.micButtonTextActive]}>{listening ? 'Parar' : 'Dictar'}</Text>
+        </TouchableOpacity>
         <TextInput
           style={styles.input}
           placeholder="Escribe aquí…"
@@ -180,7 +264,7 @@ export default function AssistantChat({ items, setItems }: { items: ChatItem[]; 
           <Text style={styles.sendButtonText}>Enviar</Text>
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -248,6 +332,12 @@ const styles = StyleSheet.create({
   suggestionText: { color: '#0f172a', fontSize: 14 },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingHorizontal: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e2e8f0', backgroundColor: 'white' },
   input: { flex: 1, minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: '#0f172a', backgroundColor: 'white' },
+  micButton: { height: 44, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: '#059669', backgroundColor: 'white', alignItems: 'center', justifyContent: 'center' },
+  micButtonActive: { backgroundColor: '#dc2626', borderColor: '#dc2626' },
+  micButtonText: { color: '#047857', fontWeight: '700', fontSize: 14 },
+  micButtonTextActive: { color: 'white' },
+  dictationNotice: { paddingHorizontal: 14, paddingVertical: 8, fontSize: 13, color: '#92400e', backgroundColor: '#fffbeb', borderTopWidth: 1, borderTopColor: '#fde68a' },
+  dictationListening: { color: '#065f46', backgroundColor: '#ecfdf5', borderTopColor: '#a7f3d0' },
   sendButton: { height: 44, paddingHorizontal: 16, borderRadius: 10, backgroundColor: '#059669', alignItems: 'center', justifyContent: 'center' },
   sendButtonDisabled: { opacity: 0.45 },
   sendButtonText: { color: 'white', fontWeight: '700', fontSize: 15 },

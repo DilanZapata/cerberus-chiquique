@@ -25,5 +25,21 @@ module.exports = ({ config }) => {
       ...config.ios,
       bundleIdentifier: isManagers ? 'com.chiquique.cerberus.managers' : 'com.chiquique.cerberus',
     },
+    // Dictado por voz del asistente: solo Managers pide permiso de microfono.
+    plugins: [
+      ...(config.plugins ?? []),
+      ...(isManagers
+        ? [
+            [
+              'expo-speech-recognition',
+              {
+                microphonePermission: 'Cerberus usa el microfono para que puedas dictarle al asistente.',
+                speechRecognitionPermission: 'Cerberus convierte tu voz en texto para el asistente.',
+                androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
+              },
+            ],
+          ]
+        : []),
+    ],
   };
 };
