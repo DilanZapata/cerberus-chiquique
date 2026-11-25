@@ -901,6 +901,7 @@ export function updateEmployee(
   id: string,
   body: Partial<{
     fullName: string;
+    nationalId: string;
     email: string;
     role: string;
     departmentId: string;

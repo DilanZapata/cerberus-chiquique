@@ -34,6 +34,7 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
 
   const [employeeCode, setEmployeeCode] = useState('');
   const [nationalId, setNationalId] = useState('');
+  const [originalNationalId, setOriginalNationalId] = useState('');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('EMPLOYEE');
@@ -67,6 +68,7 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
             setAllowsLunchSkip(emp.allowsLunchSkip);
             setEmployeeCode(emp.employeeCode);
             setNationalId(emp.nationalId);
+            setOriginalNationalId(emp.nationalId);
           }
         }
         if (sites.length === 1 && !isEdit) setWorkSiteIds([sites[0].id]);
@@ -83,6 +85,8 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
       if (isEdit) {
         await updateEmployee(session.accessToken, employeeId!, {
           fullName,
+          // Solo se manda si cambio: una edicion normal no toca la cedula.
+          nationalId: nationalId.trim() !== originalNationalId ? nationalId.trim() : undefined,
           email: email || undefined,
           role,
           departmentId: departmentId || undefined,
@@ -122,11 +126,10 @@ export default function EmployeeFormScreen({ route, navigation }: Props) {
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>{isEdit ? 'Editar empleado' : 'Nuevo empleado'}</Text>
 
-      {!isEdit && (
-        <>
-          <Field label="Codigo de empleado" value={employeeCode} onChangeText={setEmployeeCode} autoCapitalize="characters" />
-          <Field label="Cedula" value={nationalId} onChangeText={setNationalId} keyboardType="number-pad" />
-        </>
+      {!isEdit && <Field label="Codigo de empleado" value={employeeCode} onChangeText={setEmployeeCode} autoCapitalize="characters" />}
+      <Field label="Cedula" value={nationalId} onChangeText={setNationalId} keyboardType="number-pad" />
+      {isEdit && originalNationalId !== '' && nationalId.trim() !== originalNationalId && (
+        <Text style={styles.warning}>Vas a cambiar la cedula: con la nueva es con la que esta persona marca en el kiosco. Queda registrado quien lo hizo.</Text>
       )}
       <Field label="Nombre completo" value={fullName} onChangeText={setFullName} />
       <Field label="Correo (para login web/mobile)" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
@@ -226,6 +229,7 @@ function Field(props: {
 }
 
 const styles = StyleSheet.create({
+  warning: { color: '#92400e', backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a', borderRadius: 8, padding: 10, fontSize: 13 },
   container: { padding: 20, gap: 6, paddingBottom: 60 },
   title: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   field: { marginBottom: 6 },

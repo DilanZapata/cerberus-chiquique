@@ -634,6 +634,7 @@ function EditEmployeeForm({
   onCancel: () => void;
 }) {
   const [fullName, setFullName] = useState(employee.fullName);
+  const [nationalId, setNationalId] = useState(employee.nationalId ?? '');
   const [email, setEmail] = useState(employee.email ?? '');
   const [role, setRole] = useState(employee.role);
   const [departmentId, setDepartmentId] = useState(employee.department?.id ?? '');
@@ -661,6 +662,8 @@ function EditEmployeeForm({
     try {
       await updateEmployee(employee.id, {
         fullName,
+        // Solo se manda si cambio: asi una edicion normal no toca la cedula.
+        nationalId: nationalId.trim() !== (employee.nationalId ?? '') ? nationalId.trim() : undefined,
         email: email || undefined,
         role,
         departmentId: departmentId || undefined,
@@ -700,6 +703,22 @@ function EditEmployeeForm({
         <div className="sm:col-span-2">
           <label className={labelClass}>Nombre completo</label>
           <input required value={fullName} onChange={(e) => setFullName(e.target.value)} className={`mt-1 w-full ${inputClass}`} />
+        </div>
+        <div>
+          <label className={labelClass}>Cedula</label>
+          <input
+            required
+            minLength={4}
+            inputMode="numeric"
+            value={nationalId}
+            onChange={(e) => setNationalId(e.target.value)}
+            className={`mt-1 w-full ${inputClass}`}
+          />
+          {nationalId.trim() !== (employee.nationalId ?? '') && (
+            <p className="mt-1 text-xs text-amber-700">
+              Vas a cambiar la cedula de {employee.fullName}: con la nueva es con la que marca en el kiosco. Queda registrado quien lo hizo.
+            </p>
+          )}
         </div>
         <div>
           <label className={labelClass}>Correo (necesario para login web)</label>
@@ -796,6 +815,7 @@ export default function EmployeesPage() {
   const [faceEnrolled, setFaceEnrolled] = useState<Record<string, boolean>>({});
   const [enrollingUserId, setEnrollingUserId] = useState<string | null>(null);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   function loadAll() {
     setLoading(true);
@@ -836,6 +856,17 @@ export default function EmployeesPage() {
       setBusyId(null);
     }
   }
+
+  // Busqueda sin tildes ni mayusculas, por nombre, cedula, codigo o correo.
+  // Cada palabra se busca por separado: "beatriz tardia" encuentra a "Beatriz Llegada Tardia".
+  const normalize = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const words = normalize(search.trim()).split(/\s+/).filter(Boolean);
+  const visibleEmployees = words.length
+    ? employees.filter((emp) => {
+        const haystack = normalize(`${emp.fullName} ${emp.nationalId ?? ''} ${emp.employeeCode} ${emp.email ?? ''}`);
+        return words.every((word) => haystack.includes(word));
+      })
+    : employees;
 
   return (
     <div className="space-y-6">
@@ -918,8 +949,18 @@ export default function EmployeesPage() {
       </AnimatePresence>
 
       <Card className="overflow-hidden">
-        <div className="flex items-center gap-2 p-4 pb-0 text-sm font-semibold text-ink">
-          <Users size={16} /> {employees.length} empleado(s)
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 pb-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <Users size={16} /> {visibleEmployees.length === employees.length ? `${employees.length} empleado(s)` : `${visibleEmployees.length} de ${employees.length} empleado(s)`}
+          </div>
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por nombre, cedula o codigo"
+            aria-label="Buscar empleado"
+            className={`w-full sm:w-80 ${inputClass}`}
+          />
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-line-hair text-sm">
@@ -936,12 +977,19 @@ export default function EmployeesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-line-hair">
-              {employees.map((emp) => (
+              {visibleEmployees.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-4 py-6 text-center text-sm text-ink-muted">
+                    {employees.length === 0 ? 'Todavia no hay empleados.' : `Ningun empleado coincide con "${search}".`}
+                  </td>
+                </tr>
+              )}
+              {visibleEmployees.map((emp) => (
                 <tr key={emp.id}>
                   <td className="px-4 py-2">
                     <div className="font-medium text-ink">{emp.fullName}</div>
                     <div className="text-xs text-ink-muted">
-                      {emp.employeeCode} · <code>{emp.id}</code>
+                      CC {emp.nationalId} · {emp.employeeCode}
                     </div>
                   </td>
                   <td className="px-4 py-2 text-ink-secondary">{ROLE_LABELS[emp.role] ?? emp.role}</td>

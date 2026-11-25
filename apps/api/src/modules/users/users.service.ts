@@ -199,9 +199,25 @@ export class UsersService {
     return this.getOrThrow(companyId, userId);
   }
 
-  async update(companyId: string, id: string, dto: UpdateUserDto, actingUserRole: UserRole) {
+  async update(companyId: string, id: string, dto: UpdateUserDto, actingUserRole: UserRole, actingUserId?: string) {
     this.assertCanAssignRole(actingUserRole, dto.role);
-    await this.getOrThrow(companyId, id);
+    const current = await this.getOrThrow(companyId, id);
+
+    // Cambio de cedula: es con lo que la persona se identifica en el kiosco,
+    // asi que no puede repetirse dentro de la empresa y queda en auditoria.
+    const nationalId = dto.nationalId?.trim();
+    const nationalIdChanged = Boolean(nationalId) && nationalId !== current.nationalId;
+    if (nationalIdChanged) {
+      const taken = await this.prisma.user.findFirst({
+        where: { companyId, nationalId, id: { not: id } },
+        select: { fullName: true, isActive: true },
+      });
+      if (taken) {
+        throw new BadRequestException(
+          `Esa cedula ya la tiene ${taken.fullName}${taken.isActive ? '' : ' (inactivo)'}. No puede haber dos personas con la misma cedula.`,
+        );
+      }
+    }
     const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : undefined;
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : undefined;
 
@@ -216,10 +232,24 @@ export class UsersService {
       }
     }
 
+    if (nationalIdChanged) {
+      await this.prisma.auditLog.create({
+        data: {
+          companyId,
+          userId: id,
+          entity: 'User',
+          entityId: id,
+          action: 'CHANGE_NATIONAL_ID',
+          diff: { actingUserId: actingUserId ?? null, previousNationalId: current.nationalId, nationalId },
+        },
+      });
+    }
+
     return this.prisma.user.update({
       where: { id },
       data: {
         fullName: dto.fullName,
+        ...(nationalIdChanged ? { nationalId } : {}),
         email: dto.email,
         role: dto.role,
         departmentId: dto.departmentId,

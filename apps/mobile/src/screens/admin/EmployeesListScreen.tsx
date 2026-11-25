@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -23,6 +23,19 @@ export default function EmployeesListScreen({ navigation }: Props) {
   const [faceEnrolled, setFaceEnrolled] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+
+  // Busqueda sin tildes ni mayusculas, por nombre, cedula, codigo o correo.
+  const visible = useMemo(() => {
+    const normalize = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    // Cada palabra se busca por separado: "beatriz tardia" encuentra a "Beatriz Llegada Tardia".
+    const words = normalize(search.trim()).split(/\s+/).filter(Boolean);
+    if (words.length === 0) return employees;
+    return employees.filter((e) => {
+      const haystack = normalize(`${e.fullName} ${e.nationalId ?? ''} ${e.employeeCode} ${e.email ?? ''}`);
+      return words.every((word) => haystack.includes(word));
+    });
+  }, [employees, search]);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -63,12 +76,31 @@ export default function EmployeesListScreen({ navigation }: Props) {
         </TouchableOpacity>
       </View>
 
+      <TextInput
+        style={styles.search}
+        placeholder="Buscar por nombre, cedula o codigo"
+        placeholderTextColor="#94a3b8"
+        value={search}
+        onChangeText={setSearch}
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+      />
+      {search.trim() !== '' && (
+        <Text style={styles.searchCount}>
+          {visible.length} de {employees.length} empleado(s)
+        </Text>
+      )}
+
       {error && <Text style={styles.error}>{error}</Text>}
       {loading && employees.length === 0 ? (
         <ActivityIndicator style={{ marginTop: 24 }} />
       ) : (
         <FlatList
-          data={employees}
+          data={visible}
+          keyboardShouldPersistTaps="handled"
+          ListEmptyComponent={<Text style={styles.empty}>{employees.length === 0 ? 'Todavia no hay empleados.' : `Ningun empleado coincide con "${search}".`}</Text>}
           keyExtractor={(item) => item.id}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
           contentContainerStyle={[styles.list, { paddingBottom: 24 + insets.bottom }]}
@@ -81,7 +113,7 @@ export default function EmployeesListScreen({ navigation }: Props) {
                 </View>
               </View>
               <Text style={styles.meta}>
-                {item.employeeCode} · {ROLE_LABELS[item.role] ?? item.role}
+                CC {item.nationalId} · {item.employeeCode} · {ROLE_LABELS[item.role] ?? item.role}
               </Text>
               <Text style={styles.meta}>
                 {item.department?.name ?? 'Sin depto.'} · {item.workSites.map((s) => s.name).join(', ') || 'Sin sede'}
@@ -130,6 +162,9 @@ const styles = StyleSheet.create({
   newButtonText: { color: 'white', fontWeight: '600', fontSize: 13 },
   logoutText: { color: '#94a3b8', fontSize: 13 },
   error: { color: '#b91c1c', textAlign: 'center', marginBottom: 8 },
+  search: { marginHorizontal: 16, marginBottom: 8, borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: '#0f172a', backgroundColor: 'white' },
+  searchCount: { marginHorizontal: 16, marginBottom: 6, fontSize: 12, color: '#64748b' },
+  empty: { textAlign: 'center', color: '#64748b', marginTop: 24 },
   list: { paddingHorizontal: 16, paddingBottom: 24, gap: 10 },
   card: { backgroundColor: 'white', borderRadius: 10, padding: 14, gap: 4, borderWidth: 1, borderColor: '#e2e8f0' },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

@@ -19,6 +19,12 @@ export class UpdateUserDto {
   @MinLength(2)
   fullName?: string;
 
+  /** Cedula. Se puede corregir; no puede quedar igual a la de otra persona de la empresa. */
+  @IsOptional()
+  @IsString()
+  @MinLength(4)
+  nationalId?: string;
+
   @IsOptional()
   @IsEmail()
   email?: string;

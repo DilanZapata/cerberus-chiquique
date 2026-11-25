@@ -39,7 +39,7 @@ export class UsersController {
   @Roles(UserRole.ADMIN, UserRole.HR)
   @Put(':id')
   update(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return this.usersService.update(user.companyId, id, dto, user.role as UserRole);
+    return this.usersService.update(user.companyId, id, dto, user.role as UserRole, user.id);
   }
 
   @Roles(UserRole.ADMIN, UserRole.HR)
